@@ -51,18 +51,63 @@ async function registerCommands() {
 // 1. COMMANDS
 // ----------------------------------------------------------------------------
 
+function renderTermsMessage() {
+  const text =
+    `📜 **بیانیه حفظ حریم خصوصی، امنیت اطلاعات و شرایط استفاده**\n\n` +
+    `کاربر گرامی، به ربات راه‌اندازی خودکار **WhiteDNS Soar Server** خوش آمدید.\n` +
+    `لطفاً پیش از شروع فرآیند نصب، موارد زیر را مطالعه فرمایید:\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `🔹 **چه اطلاعاتی از شما دریافت می‌شود؟**\n` +
+    `برای انجام فرآیند ۱۰۰٪ خودکار نصب و پیکربندی سرور، اطلاعات زیر در مراحل بعد از شما درخواست خواهد شد:\n` +
+    `۱. **اطلاعات کلودفلر (Cloudflare):** آدرس ایمیل، توکن API یا کلید سراسری و نام دامنه شما (صرفاً جهت ساخت خودکار ۳ رکورد DNS تانل).\n` +
+    `۲. **اطلاعات دسترسی سرور (VPS):** آدرس IP عمومی، پورت SSH، نام کاربری و رمز عبور root یا کلید SSH (صرفاً برای برقراری اتصال موقت SSH و اجرای مراحل نصب).\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `🔒 **تضمین‌های امنیتی و عدم ذخیره‌سازی داده‌ها (Privacy & Security):**\n` +
+    `• **عدم ذخیره رمز عبور:** رمز عبور سرور شما (VPS Password) و توکن‌های امنیتی به هیچ عنوان در هیچ پایگاه داده، فضای ابری یا سرورهای WhiteDNS ذخیره و ثبت نمی‌شوند.\n` +
+    `• **پاک‌سازی خودکار در تلگرام:** پیام‌های حاوی رمز عبور یا توکن که در چت ارسال می‌کنید، بلافاصله پس از دریافت توسط ربات حذف می‌شوند تا هیچ ردی در تاریخچه تلگرام شما باقی نماند.\n` +
+    `• **اتصال مستقیم و امن:** ربات با پروتکل رمزنگاری‌شده SSH مستقیماً به سرور شخصی خودتان متصل می‌شود و باینری‌ها مستقیماً از مخزن رسمی گیت‌هاب روی سرور شما دانلود می‌شوند.\n` +
+    `• **۱۰۰٪ متن‌باز (Open Source):** کلیه کدهای این ربات و اسکریپت‌های نصاب به صورت شفاف در گیت‌هاب در دسترس عموم و قابل ارزیابی هستند.\n` +
+    `• **مالکیت کامل:** مدیریت، دسترسی‌ها و کنترل سرور و دامنه پس از نصب کاملاً در اختیار خود شماست و هیچ بک‌دوری در سیستم وجود ندارد.\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `⚠️ _با انتخاب گزینه «شرایط را می‌پذیرم»، تایید می‌کنید که مالک سرور و دامنه بوده و به ربات اجازه اتصال و اجرای نصب را می‌دهید._`;
+
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('✅ شرایط را می‌پذیرم و ادامه می‌دهم', 'terms_accept')],
+    [Markup.button.callback('❌ نمی‌پذیرم و انصراف', 'terms_decline')]
+  ]);
+
+  return { text, keyboard };
+}
+
+function renderCfEmailPrompt(ctx, isEdit = false) {
+  const text =
+    `👋 **شروع فرآیند نصب WhiteDNS Soar Server**\n\n` +
+    `این ربات تمامی مراحل تنظیم کلودفلر، اتصال SSH به سرور، حل تداخل پورت ۵۳، نصب پیش‌نیازها و صدور گواهی SSL را **به صورت ۱۰۰٪ خودکار** انجام می‌دهد.\n\n` +
+    `📧 **مرحله ۱ از ۲: ورود ایمیل کلودفلر**\n` +
+    `لطفاً **آدرس ایمیل** اکانت کلودفلر خود را ارسال فرمایید:\n` +
+    `_(مثال: myname@gmail.com)_\n\n` +
+    `💡 _اگر توکن آماده دارید، می‌توانید آن را مستقیماً ارسال کنید._`;
+
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.url('🚀 باز کردن فرم آماده توکن (۱-کلیک)', CF_TEMPLATE_URL)],
+    [Markup.button.callback('🛠 عیب‌یابی و تعمیر سرور موجود', 'menu:repair')],
+    [Markup.button.callback('❌ انصراف', 'cancel')]
+  ]);
+
+  if (isEdit) {
+    return ctx.editMessageText(text, {
+      parse_mode: 'Markdown',
+      ...keyboard
+    }).catch(() => ctx.replyWithMarkdown(text, keyboard));
+  }
+  return ctx.replyWithMarkdown(text, keyboard);
+}
+
 bot.command('start', async (ctx) => {
   const chatId = ctx.chat.id;
-  resetSession(chatId, 'AWAITING_CF_EMAIL');
-
-  return ctx.replyWithMarkdown(
-    `👋 **به ربات نصب کاملاً خودکار WhiteDNS Soar Server خوش آمدید.**\n\nاین ربات تمامی مراحل تنظیم کلودفلر، اتصال SSH به سرور، حل تداخل پورت ۵۳، نصب پیش‌نیازها و صدور گواهی SSL را **به صورت ۱۰۰٪ خودکار** انجام می‌دهد.\n\n📧 **مرحله ۱ از ۲: ورود ایمیل کلودفلر**\nلطفاً **آدرس ایمیل** اکانت کلودفلر خود را ارسال فرمایید:\n_(مثال: myname@gmail.com)_\n\n💡 _اگر توکن آماده دارید، می‌توانید آن را مستقیماً ارسال کنید._`,
-    Markup.inlineKeyboard([
-      [Markup.button.url('🚀 باز کردن فرم آماده توکن (۱-کلیک)', CF_TEMPLATE_URL)],
-      [Markup.button.callback('🛠 عیب‌یابی و تعمیر سرور موجود', 'menu:repair')],
-      [Markup.button.callback('❌ انصراف', 'cancel')]
-    ])
-  );
+  resetSession(chatId, 'TERMS_AGREEMENT');
+  const { text, keyboard } = renderTermsMessage();
+  return ctx.replyWithMarkdown(text, keyboard);
 });
 
 bot.command('help', async (ctx) => {
@@ -199,6 +244,17 @@ bot.on('text', async (ctx) => {
 
   if (!session || session.step === 'IDLE') {
     return;
+  }
+
+  // 0. TERMS AGREEMENT
+  if (session.step === 'TERMS_AGREEMENT') {
+    return ctx.replyWithMarkdown(
+      '⚠️ **لطفاً برای ادامه، ابتدا شرایط استفاده و حریم خصوصی را تعیین تکلیف فرمایید:**\n\nجهت پذیرش و ورود به مرحله بعد دکمه «✅ شرایط را می‌پذیرم» و در غیر این صورت دکمه «❌ نمی‌پذیرم» را لمس کنید.',
+      Markup.inlineKeyboard([
+        [Markup.button.callback('✅ شرایط را می‌پذیرم و ادامه می‌دهم', 'terms_accept')],
+        [Markup.button.callback('❌ نمی‌پذیرم و انصراف', 'terms_decline')]
+      ])
+    );
   }
 
   // 1. AWAITING CLOUDFLARE EMAIL
@@ -662,14 +718,39 @@ bot.on('text', async (ctx) => {
 bot.action('cmd:start', (ctx) => {
   ctx.answerCbQuery().catch(() => {});
   const chatId = ctx.chat.id;
-  resetSession(chatId, 'AWAITING_CF_EMAIL');
-  return ctx.replyWithMarkdown(
-    `👋 **شروع نصب WhiteDNS Soar Server**\n\n📧 **مرحله ۱ از ۲: ورود ایمیل کلودفلر**\nلطفاً **آدرس ایمیل** اکانت کلودفلر خود را ارسال فرمایید:\n_(مثال: myname@gmail.com)_`,
-    Markup.inlineKeyboard([
-      [Markup.button.url('🚀 باز کردن فرم آماده توکن (۱-کلیک)', CF_TEMPLATE_URL)],
-      [Markup.button.callback('❌ انصراف', 'cancel')]
-    ])
-  );
+  resetSession(chatId, 'TERMS_AGREEMENT');
+  const { text, keyboard } = renderTermsMessage();
+  return ctx.editMessageText(text, {
+    parse_mode: 'Markdown',
+    ...keyboard
+  }).catch(() => ctx.replyWithMarkdown(text, keyboard));
+});
+
+bot.action('terms_accept', async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  saveSession(chatId, { step: 'AWAITING_CF_EMAIL' });
+  return renderCfEmailPrompt(ctx, true);
+});
+
+bot.action('terms_decline', async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  resetSession(chatId, 'IDLE');
+
+  const text =
+    `❌ **فرآیند راه‌اندازی لغو گردید.**\n\n` +
+    `شما شرایط استفاده و بیانیه حفظ حریم خصوصی را نپذیرفتید. هیچ‌گونه اطلاعاتی دریافت یا ذخیره نشد و هیچ تغییری روی سرور یا دامنه شما اعمال نگردید.\n\n` +
+    `هر زمان که تمایل داشتید، می‌توانید با انتخاب دکمه زیر یا ارسال مجدد دستور /start فرآیند را آغاز کنید:`;
+
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('🚀 شروع مجدد (/start)', 'cmd:start')]
+  ]);
+
+  return ctx.editMessageText(text, {
+    parse_mode: 'Markdown',
+    ...keyboard
+  }).catch(() => ctx.replyWithMarkdown(text, keyboard));
 });
 
 bot.action('cancel', (ctx) => {

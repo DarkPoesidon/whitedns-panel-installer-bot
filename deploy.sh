@@ -118,6 +118,8 @@ chmod +x "$INSTALL_DIR/scripts/install-soar.sh" "$INSTALL_DIR/scripts/uninstall-
 chmod +x "$INSTALL_DIR/menu.sh" "$INSTALL_DIR/update.sh" "$INSTALL_DIR/uninstall.sh" 2>/dev/null || true
 ln -sf "$INSTALL_DIR/menu.sh" /usr/local/bin/whitedns-bot
 ln -sf "$INSTALL_DIR/menu.sh" /usr/local/bin/bot
+ln -sf "$INSTALL_DIR/menu.sh" /usr/bin/whitedns-bot
+ln -sf "$INSTALL_DIR/menu.sh" /usr/bin/bot
 
 # 6. Setup and start systemd service
 echo -e "${BLUE}[5/5] Setting up systemd service (whitedns-bot.service)...${NC}"

@@ -89,6 +89,8 @@ chmod +x "$BOT_DIR/scripts/install-soar.sh" "$BOT_DIR/scripts/uninstall-soar.sh"
 chmod +x "$BOT_DIR/menu.sh" "$BOT_DIR/update.sh" "$BOT_DIR/uninstall.sh" 2>/dev/null || true
 ln -sf "$BOT_DIR/menu.sh" /usr/local/bin/whitedns-bot
 ln -sf "$BOT_DIR/menu.sh" /usr/local/bin/bot
+ln -sf "$BOT_DIR/menu.sh" /usr/bin/whitedns-bot
+ln -sf "$BOT_DIR/menu.sh" /usr/bin/bot
 
 # 6. Create systemd service
 SERVICE_FILE="/etc/systemd/system/whitedns-bot.service"

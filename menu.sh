@@ -34,6 +34,13 @@ fi
 
 cd "$BOT_DIR"
 
+# Self-heal global CLI shortcuts if missing
+ln -sf "$BOT_DIR/menu.sh" /usr/local/bin/whitedns-bot 2>/dev/null || true
+ln -sf "$BOT_DIR/menu.sh" /usr/local/bin/bot 2>/dev/null || true
+ln -sf "$BOT_DIR/menu.sh" /usr/bin/whitedns-bot 2>/dev/null || true
+ln -sf "$BOT_DIR/menu.sh" /usr/bin/bot 2>/dev/null || true
+chmod +x "$BOT_DIR/menu.sh" 2>/dev/null || true
+
 while true; do
   clear 2>/dev/null || true
   STATUS="UNKNOWN"

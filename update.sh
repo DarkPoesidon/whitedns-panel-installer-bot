@@ -44,7 +44,14 @@ git reset --hard origin/main
 echo -e "${BLUE}[2/3] Updating npm packages...${NC}"
 npm install --omit=dev
 
+# Make all scripts executable and link global CLI shortcuts
 chmod +x "$TARGET_DIR/scripts/install-soar.sh" "$TARGET_DIR/scripts/uninstall-soar.sh" 2>/dev/null || true
+chmod +x "$TARGET_DIR/menu.sh" "$TARGET_DIR/update.sh" "$TARGET_DIR/uninstall.sh" 2>/dev/null || true
+
+ln -sf "$TARGET_DIR/menu.sh" /usr/local/bin/whitedns-bot
+ln -sf "$TARGET_DIR/menu.sh" /usr/local/bin/bot
+ln -sf "$TARGET_DIR/menu.sh" /usr/bin/whitedns-bot
+ln -sf "$TARGET_DIR/menu.sh" /usr/bin/bot
 
 echo -e "${BLUE}[3/3] Restarting systemd service (whitedns-bot.service)...${NC}"
 systemctl daemon-reload

@@ -87,10 +87,20 @@ npm install --omit=dev
 # 5. Make scripts executable and create menu symlinks
 chmod +x "$BOT_DIR/scripts/install-soar.sh" "$BOT_DIR/scripts/uninstall-soar.sh" 2>/dev/null || true
 chmod +x "$BOT_DIR/menu.sh" "$BOT_DIR/update.sh" "$BOT_DIR/uninstall.sh" 2>/dev/null || true
-ln -sf "$BOT_DIR/menu.sh" /usr/local/bin/whitedns-bot
-ln -sf "$BOT_DIR/menu.sh" /usr/local/bin/bot
-ln -sf "$BOT_DIR/menu.sh" /usr/bin/whitedns-bot
-ln -sf "$BOT_DIR/menu.sh" /usr/bin/bot
+cat > /usr/bin/whitedns-bot <<'EOF_BIN'
+#!/usr/bin/env bash
+if [[ -f /opt/whitedns-bot/menu.sh ]]; then
+  exec bash /opt/whitedns-bot/menu.sh "$@"
+else
+  exec bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/menu.sh) "$@"
+fi
+EOF_BIN
+chmod +x /usr/bin/whitedns-bot
+cp -f /usr/bin/whitedns-bot /usr/bin/bot
+mkdir -p /usr/local/bin
+cp -f /usr/bin/whitedns-bot /usr/local/bin/whitedns-bot
+cp -f /usr/bin/whitedns-bot /usr/local/bin/bot
+hash -r 2>/dev/null || true
 
 # 6. Create systemd service
 SERVICE_FILE="/etc/systemd/system/whitedns-bot.service"

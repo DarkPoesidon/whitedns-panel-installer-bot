@@ -48,10 +48,20 @@ npm install --omit=dev
 chmod +x "$TARGET_DIR/scripts/install-soar.sh" "$TARGET_DIR/scripts/uninstall-soar.sh" 2>/dev/null || true
 chmod +x "$TARGET_DIR/menu.sh" "$TARGET_DIR/update.sh" "$TARGET_DIR/uninstall.sh" 2>/dev/null || true
 
-ln -sf "$TARGET_DIR/menu.sh" /usr/local/bin/whitedns-bot
-ln -sf "$TARGET_DIR/menu.sh" /usr/local/bin/bot
-ln -sf "$TARGET_DIR/menu.sh" /usr/bin/whitedns-bot
-ln -sf "$TARGET_DIR/menu.sh" /usr/bin/bot
+cat > /usr/bin/whitedns-bot <<'EOF_BIN'
+#!/usr/bin/env bash
+if [[ -f /opt/whitedns-bot/menu.sh ]]; then
+  exec bash /opt/whitedns-bot/menu.sh "$@"
+else
+  exec bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/menu.sh) "$@"
+fi
+EOF_BIN
+chmod +x /usr/bin/whitedns-bot
+cp -f /usr/bin/whitedns-bot /usr/bin/bot
+mkdir -p /usr/local/bin
+cp -f /usr/bin/whitedns-bot /usr/local/bin/whitedns-bot
+cp -f /usr/bin/whitedns-bot /usr/local/bin/bot
+hash -r 2>/dev/null || true
 
 echo -e "${BLUE}[3/3] Restarting systemd service (whitedns-bot.service)...${NC}"
 systemctl daemon-reload

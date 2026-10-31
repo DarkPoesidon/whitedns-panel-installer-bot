@@ -28,18 +28,36 @@ if [[ -d "$INSTALL_DIR" ]]; then
 elif [[ -d "$SCRIPT_DIR" && -f "$SCRIPT_DIR/src/bot.js" ]]; then
   BOT_DIR="$SCRIPT_DIR"
 else
-  echo -e "${RED}[ERROR] WhiteDNS Bot directory not found at $INSTALL_DIR.${NC}"
-  exit 1
+  BOT_DIR="$INSTALL_DIR"
+  mkdir -p "$BOT_DIR"
 fi
 
-cd "$BOT_DIR"
+# Ensure menu.sh is saved locally in BOT_DIR
+if [[ -d "$BOT_DIR" && ! -f "$BOT_DIR/menu.sh" ]]; then
+  curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/menu.sh -o "$BOT_DIR/menu.sh" 2>/dev/null || true
+  chmod +x "$BOT_DIR/menu.sh" 2>/dev/null || true
+fi
 
-# Self-heal global CLI shortcuts if missing
-ln -sf "$BOT_DIR/menu.sh" /usr/local/bin/whitedns-bot 2>/dev/null || true
-ln -sf "$BOT_DIR/menu.sh" /usr/local/bin/bot 2>/dev/null || true
-ln -sf "$BOT_DIR/menu.sh" /usr/bin/whitedns-bot 2>/dev/null || true
-ln -sf "$BOT_DIR/menu.sh" /usr/bin/bot 2>/dev/null || true
-chmod +x "$BOT_DIR/menu.sh" 2>/dev/null || true
+# Install permanent standalone launcher wrappers (not broken symlinks)
+install_global_launchers() {
+  cat > /usr/bin/whitedns-bot <<'EOF_BIN'
+#!/usr/bin/env bash
+if [[ -f /opt/whitedns-bot/menu.sh ]]; then
+  exec bash /opt/whitedns-bot/menu.sh "$@"
+else
+  exec bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/menu.sh) "$@"
+fi
+EOF_BIN
+  chmod +x /usr/bin/whitedns-bot
+  cp -f /usr/bin/whitedns-bot /usr/bin/bot
+  mkdir -p /usr/local/bin
+  cp -f /usr/bin/whitedns-bot /usr/local/bin/whitedns-bot
+  cp -f /usr/bin/whitedns-bot /usr/local/bin/bot
+  hash -r 2>/dev/null || true
+}
+install_global_launchers
+
+cd "$BOT_DIR"
 
 while true; do
   clear 2>/dev/null || true
@@ -63,12 +81,12 @@ while true; do
   echo -e " ${GREEN}3)${NC} Restart Bot Service      (systemctl restart)"
   echo -e " ${GREEN}4)${NC} Stop Bot Service         (systemctl stop)"
   echo -e " ${GREEN}5)${NC} Start Bot Service        (systemctl start)"
-  echo -e " ${CYAN}------------------------------------------------------${NC}"
+  echo -e "${CYAN}------------------------------------------------------${NC}"
   echo -e " ${GREEN}6)${NC} View Deployed Panels     (List active servers & URLs)"
   echo -e " ${GREEN}7)${NC} Update Bot to Latest     (git pull & update)"
   echo -e " ${GREEN}8)${NC} Change Telegram Token    (Edit BOT_TOKEN in .env)"
   echo -e " ${GREEN}9)${NC} Completely Uninstall     (Purge bot and systemd unit)"
-  echo -e " ${CYAN}------------------------------------------------------${NC}"
+  echo -e "${CYAN}------------------------------------------------------${NC}"
   echo -e " ${YELLOW}0) Exit Menu${NC}"
   echo -e "${CYAN}======================================================${NC}"
   read -r -p "Select an option [0-9]: " CHOICE
@@ -179,7 +197,8 @@ EOF
       exit 0
       ;;
     0)
-      echo -e "\n${GREEN}Exiting. Good bye!${NC}"
+      echo -e "\n${GREEN}[OK] Global commands are active! You can reopen this menu anytime by typing:${NC}"
+      echo -e "       ${CYAN}whitedns-bot${NC}  or  ${CYAN}bot${NC}\n"
       exit 0
       ;;
     *)

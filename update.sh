@@ -25,27 +25,49 @@ fi
 
 INSTALL_DIR="/opt/whitedns-bot"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_URL="https://github.com/DarkPoesidon/whitedns-panel-installer-bot.git"
 
-if [[ -d "$INSTALL_DIR/.git" ]]; then
+if [[ -d "$INSTALL_DIR" ]]; then
   TARGET_DIR="$INSTALL_DIR"
-elif [[ -d "$SCRIPT_DIR/.git" ]]; then
+elif [[ -d "$SCRIPT_DIR" && -f "$SCRIPT_DIR/package.json" ]]; then
   TARGET_DIR="$SCRIPT_DIR"
 else
-  echo -e "${RED}[ERROR] Bot directory with Git repository not found.${NC}"
+  echo -e "${RED}[ERROR] Bot directory (/opt/whitedns-bot) not found.${NC}"
+  echo -e "Please deploy the bot first using:"
+  echo -e "${YELLOW}bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/deploy.sh)${NC}"
   exit 1
 fi
 
 cd "$TARGET_DIR"
 
+# Ensure git is installed
+if ! command -v git &>/dev/null; then
+  echo -e "${BLUE}[INFO] Installing git...${NC}"
+  apt-get update -qq && apt-get install -y -qq git
+fi
+
+# Ensure git safe directory is configured
+git config --global --add safe.directory "$TARGET_DIR" 2>/dev/null || true
+
+# If .git directory does not exist, initialize it
+if [[ ! -d "$TARGET_DIR/.git" ]]; then
+  echo -e "${YELLOW}[INFO] Initializing git repository in $TARGET_DIR...${NC}"
+  git init -b main 2>/dev/null || git init
+  git remote add origin "$REPO_URL" 2>/dev/null || true
+fi
+
+# Ensure remote origin is configured
+git remote set-url origin "$REPO_URL" 2>/dev/null || git remote add origin "$REPO_URL" 2>/dev/null || true
+
 echo -e "${BLUE}[1/3] Fetching latest updates from GitHub...${NC}"
-git fetch --all
+git fetch --all --prune
 git reset --hard origin/main
 
 echo -e "${BLUE}[2/3] Updating npm packages...${NC}"
 npm install --omit=dev
 
 # Make all scripts executable and link global CLI shortcuts
-chmod +x "$TARGET_DIR/scripts/install-soar.sh" "$TARGET_DIR/scripts/uninstall-soar.sh" 2>/dev/null || true
+chmod +x "$TARGET_DIR/scripts/install-soar.sh" "$TARGET_DIR/scripts/uninstall-soar.sh" "$TARGET_DIR/scripts/repair-soar.sh" 2>/dev/null || true
 chmod +x "$TARGET_DIR/menu.sh" "$TARGET_DIR/update.sh" "$TARGET_DIR/uninstall.sh" 2>/dev/null || true
 
 cat > /usr/bin/whitedns-bot <<'EOF_BIN'
@@ -65,10 +87,10 @@ hash -r 2>/dev/null || true
 
 echo -e "${BLUE}[3/3] Restarting systemd service (whitedns-bot.service)...${NC}"
 systemctl daemon-reload
-systemctl restart whitedns-bot.service
+systemctl restart whitedns-bot.service 2>/dev/null || systemctl restart whitedns-bot 2>/dev/null || true
 
 sleep 2
-if systemctl is-active --quiet whitedns-bot.service; then
+if systemctl is-active --quiet whitedns-bot.service || systemctl is-active --quiet whitedns-bot; then
   echo -e "\n${GREEN}======================================================"
   echo -e "   WhiteDNS Bot successfully updated to latest version!"
   echo -e "======================================================${NC}"

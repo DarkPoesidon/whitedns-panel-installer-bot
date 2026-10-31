@@ -1,6 +1,9 @@
 import { Telegraf, Markup } from 'telegraf';
 import { exec } from 'child_process';
 import util from 'util';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 import { BOT_TOKEN, CF_TEMPLATE_URL } from './config.js';
 import { getSession, saveSession, resetSession, addDeployment, listDeployments, deleteDeploymentByIp } from './db.js';
 import {
@@ -16,6 +19,10 @@ import {
 } from './cloudflare.js';
 import { installOverSSH, uninstallOverSSH, repairOverSSH } from './ssh-installer.js';
 import { generateStrongPassword, renderProgressBox, renderCompletionCard, renderErrorCard, renderRepairProgressBox, renderRepairCard } from './ui.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const BOT_DIR = path.resolve(__dirname, '..');
 
 const execPromise = util.promisify(exec);
 const tempDnsState = new Map();
@@ -178,8 +185,21 @@ bot.command('update', async (ctx) => {
   const statusMsg = await ctx.replyWithMarkdown('⏳ **در حال بررسی مخزن گیت‌هاب جهت دریافت آخرین نسخه...**');
 
   try {
-    await execPromise('git fetch origin main 2>&1');
-    const { stdout: statusOut } = await execPromise('git status -uno 2>&1');
+    const execOpts = { cwd: BOT_DIR };
+
+    // 1. Ensure safe directory configuration for git
+    await execPromise(`git config --global --add safe.directory "${BOT_DIR}" 2>&1`, execOpts).catch(() => {});
+
+    // 2. Ensure git repository is initialized
+    if (!fs.existsSync(path.join(BOT_DIR, '.git'))) {
+      await execPromise('git init -b main 2>&1 || git init 2>&1', execOpts);
+      await execPromise('git remote add origin https://github.com/DarkPoesidon/whitedns-panel-installer-bot.git 2>&1 || git remote set-url origin https://github.com/DarkPoesidon/whitedns-panel-installer-bot.git 2>&1', execOpts);
+    } else {
+      await execPromise('git remote set-url origin https://github.com/DarkPoesidon/whitedns-panel-installer-bot.git 2>&1', execOpts).catch(() => {});
+    }
+
+    await execPromise('git fetch origin main 2>&1', execOpts);
+    const { stdout: statusOut } = await execPromise('git status -uno 2>&1', execOpts);
 
     if (statusOut.includes('Your branch is up to date') && !statusOut.includes('behind')) {
       return ctx.telegram.editMessageText(
@@ -201,7 +221,7 @@ bot.command('update', async (ctx) => {
 
     setTimeout(async () => {
       try {
-        await execPromise('git reset --hard origin/main && npm install --omit=dev && systemctl restart whitedns-bot');
+        await execPromise('git reset --hard origin/main && npm install --omit=dev && (systemctl restart whitedns-bot.service 2>/dev/null || systemctl restart whitedns-bot 2>/dev/null || true)', execOpts);
       } catch (e) {
         console.error('Update restart error:', e);
       }

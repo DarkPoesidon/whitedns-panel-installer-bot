@@ -68,14 +68,19 @@ fi
 echo -e "${GREEN}[OK] Node.js $(node -v) is ready.${NC}"
 
 # 3. Clone or update repository
-if [[ -d "$INSTALL_DIR/.git" ]]; then
-  echo -e "${BLUE}[3/5] Updating repository from GitHub...${NC}"
+if [[ -d "$INSTALL_DIR" ]]; then
+  echo -e "${BLUE}[3/5] Setting up repository in $INSTALL_DIR...${NC}"
   cd "$INSTALL_DIR"
-  git fetch --all
+  git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
+  if [[ ! -d "$INSTALL_DIR/.git" ]]; then
+    git init -b main 2>/dev/null || git init
+    git remote add origin "$REPO_URL" 2>/dev/null || true
+  fi
+  git remote set-url origin "$REPO_URL" 2>/dev/null || git remote add origin "$REPO_URL" 2>/dev/null || true
+  git fetch --all --prune
   git reset --hard origin/main || git reset --hard origin/master
 else
   echo -e "${BLUE}[3/5] Cloning repository into $INSTALL_DIR...${NC}"
-  rm -rf "$INSTALL_DIR"
   git clone "$REPO_URL" "$INSTALL_DIR"
   cd "$INSTALL_DIR"
 fi

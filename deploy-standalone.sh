@@ -27,6 +27,14 @@ fi
 INSTALL_DIR="/opt/whitedns-bot"
 mkdir -p "$INSTALL_DIR/src" "$INSTALL_DIR/scripts"
 
+# Initialize git repository so self-updates work
+if command -v git &>/dev/null; then
+  git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
+  if [[ ! -d "$INSTALL_DIR/.git" ]]; then
+    (cd "$INSTALL_DIR" && (git init -b main 2>/dev/null || git init) && (git remote add origin https://github.com/DarkPoesidon/whitedns-panel-installer-bot.git 2>/dev/null || true)) 2>/dev/null || true
+  fi
+fi
+
 # 1. Write package.json
 cat > "$INSTALL_DIR/package.json" <<'EOF'
 {

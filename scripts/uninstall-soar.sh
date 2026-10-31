@@ -69,7 +69,13 @@ fi
 
 report_progress "3" "success" "Data files, certificates, and system user purged."
 
-# 4. Restore DNS Stub Listener if needed
+# 4. Remove Nginx reverse proxy site configuration if present
+if [[ -f /etc/nginx/sites-available/soar-panel || -L /etc/nginx/sites-enabled/soar-panel ]]; then
+  rm -f /etc/nginx/sites-enabled/soar-panel /etc/nginx/sites-available/soar-panel
+  systemctl reload nginx 2>/dev/null || true
+fi
+
+# 5. Restore DNS Stub Listener if needed
 report_progress "4" "in_progress" "Restoring default DNS configuration..."
 
 if [[ -f /etc/systemd/resolved.conf ]]; then

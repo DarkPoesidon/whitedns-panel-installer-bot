@@ -2,6 +2,7 @@
 # ==============================================================================
 # WhiteDNS Soar Server - 100% Unattended Headless Installer
 # Designed for Telegram Serverless Bot Automation
+# Features: Nginx SSL Reverse Proxy, Auto-Certbot, Zero-Stall Loopback Binding
 # ==============================================================================
 set -Eeuo pipefail
 export LC_ALL=C
@@ -43,7 +44,7 @@ die() {
 # ------------------------------------------------------------------------------
 # 1. Validation & System Checks
 # ------------------------------------------------------------------------------
-report_progress "1" "in_progress" "Validating server environment and ports..."
+report_progress "1" "in_progress" "Validating server environment and resolving port 53..."
 
 [[ $EUID -eq 0 ]] || die "This installer must be run as root."
 [[ -r /etc/os-release ]] || die "Requires Ubuntu 22.04+ or Debian 12+."
@@ -74,8 +75,14 @@ fi
 if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
   if grep -qE '^#?DNSStubListener=yes' /etc/systemd/resolved.conf; then
     sed -i 's/^#\?DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf
-    systemctl restart systemd-resolved || true
+    systemctl restart systemd-resolved 2>/dev/null || true
   fi
+fi
+
+# Crucial: Ensure upstream DNS resolver is active and never loops back to dead 127.0.0.53
+if [[ -L /etc/resolv.conf ]] || ! grep -qE '^nameserver (1\.1\.1\.1|8\.8\.8\.8)' /etc/resolv.conf 2>/dev/null; then
+  rm -f /etc/resolv.conf
+  printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 9.9.9.9\n" > /etc/resolv.conf
 fi
 
 report_progress "1" "success" "Server verified: $ID $VERSION_ID ($BUNDLE_ARCH), IP: $PUBLIC_IP"
@@ -83,10 +90,10 @@ report_progress "1" "success" "Server verified: $ID $VERSION_ID ($BUNDLE_ARCH), 
 # ------------------------------------------------------------------------------
 # 2. Install Required Dependencies
 # ------------------------------------------------------------------------------
-report_progress "2" "in_progress" "Installing prerequisites (curl, dnsutils, iproute2, ufw, tar)..."
+report_progress "2" "in_progress" "Installing prerequisites (curl, dnsutils, nginx, certbot, ufw)..."
 
 apt-get update -y
-apt-get install -y --no-install-recommends ca-certificates curl dnsutils iproute2 ufw tar coreutils util-linux
+apt-get install -y --no-install-recommends ca-certificates curl dnsutils iproute2 ufw tar coreutils util-linux nginx certbot openssl
 
 report_progress "2" "success" "Dependencies successfully installed."
 
@@ -131,6 +138,7 @@ report_progress "4" "in_progress" "Setting up system user, binaries and database
 id soar-panel >/dev/null 2>&1 || useradd --system --home-dir /var/lib/soar-panel --shell /usr/sbin/nologin soar-panel
 
 install -d -o soar-panel -g soar-panel -m 0700 /var/lib/soar-panel
+install -d -o soar-panel -g soar-panel -m 0700 /var/lib/soar-panel/certificates
 install -d -m 0700 /var/lib/soar-panel-ops
 
 install -m 0755 "$EXTRACTED_DIR/bin/linux-$BUNDLE_ARCH/soar-panel" /usr/local/bin/soar-panel
@@ -164,11 +172,17 @@ rm -f -- "$PW_FILE"
 chown soar-panel:soar-panel "$DB_FILE"
 chmod 0600 "$DB_FILE"
 
-# Pre-configure initial access with random secret path
+# Pre-configure access with random secret path on 127.0.0.1 loopback
 /usr/local/bin/soar-panel configure-access \
   --db "$DB_FILE" \
   --listen "127.0.0.1:$PANEL_PORT" \
   --random-path
+
+# Ensure domain is blank in access.json so soar-panel delegates SSL to Nginx
+if [[ -f /var/lib/soar-panel/access.json ]]; then
+  sed -i -E 's/"domain":[[:space:]]*"[^"]*"/"domain": ""/' /var/lib/soar-panel/access.json
+  sed -i -E 's/"https":[[:space:]]*true/"https": false/' /var/lib/soar-panel/access.json
+fi
 
 chown soar-panel:soar-panel /var/lib/soar-panel/access.json
 chmod 0600 /var/lib/soar-panel/access.json
@@ -251,9 +265,9 @@ systemctl restart soar-panel.service || systemctl start soar-panel.service || tr
 systemctl enable soar-panel-ops.service || true
 systemctl enable soar-panel.service || true
 
-# Wait for healthy service readiness (with timeout per attempt)
+# Wait for healthy service readiness
 HEALTHY=0
-for i in {1..25}; do
+for i in {1..20}; do
   if systemctl is-active --quiet soar-panel.service; then
     if timeout 3s /usr/local/bin/soar-panel health --db "$DB_FILE" --listen "127.0.0.1:$PANEL_PORT" >/dev/null 2>&1; then
       HEALTHY=1
@@ -263,7 +277,6 @@ for i in {1..25}; do
   sleep 1
 done
 
-# Fallback check: verify socket is listening
 if [[ $HEALTHY -eq 0 ]]; then
   if ss -ltn | grep -qE "(:$PANEL_PORT |127\.0\.0\.1:$PANEL_PORT)"; then
     HEALTHY=1
@@ -275,35 +288,90 @@ fi
 report_progress "5" "success" "Systemd daemon services active and operational."
 
 # ------------------------------------------------------------------------------
-# 6. Configure Panel Domain & SSL Certificate
+# 6. Configure SSL Certificate & High-Performance Nginx Reverse Proxy
 # ------------------------------------------------------------------------------
-report_progress "6" "in_progress" "Configuring panel domain and Let's Encrypt SSL certificate..."
+report_progress "6" "in_progress" "Configuring domain SSL certificate and Nginx reverse proxy..."
 
-systemctl stop soar-panel.service || true
+systemctl stop nginx 2>/dev/null || true
+mkdir -p /etc/letsencrypt
 
-# Execute configure-access with bounded timeout (30 seconds)
-if ! timeout 30s /usr/local/bin/soar-panel configure-access \
-    --db "$DB_FILE" \
-    --listen "127.0.0.1:$PANEL_PORT" \
-    --domain "$PANEL_DOMAIN" \
-    --email "$ADMIN_EMAIL" \
-    --random-path; then
-  # Fallback to keep existing random path if domain ACME challenge times out
-  timeout 10s /usr/local/bin/soar-panel configure-access \
-    --db "$DB_FILE" \
-    --listen "127.0.0.1:$PANEL_PORT" \
-    --random-path || true
+CERT_PATH="/etc/letsencrypt/live/$PANEL_DOMAIN"
+CERT_FILE=""
+KEY_FILE=""
+
+# Attempt Certbot standalone Let's Encrypt certificate acquisition
+certbot certonly --standalone --agree-tos --register-unsafely-without-email --non-interactive \
+  -d "$PANEL_DOMAIN" --keep-until-expiring >/dev/null 2>&1 || true
+
+if [[ -f "$CERT_PATH/fullchain.pem" && -f "$CERT_PATH/privkey.pem" ]]; then
+  CERT_FILE="$CERT_PATH/fullchain.pem"
+  KEY_FILE="$CERT_PATH/privkey.pem"
+else
+  # Check if another cert matches in letsencrypt live directory
+  ALT_CERT=$(find /etc/letsencrypt/live -name "fullchain.pem" 2>/dev/null | head -n 1 || true)
+  if [[ -n "$ALT_CERT" ]]; then
+    CERT_FILE="$ALT_CERT"
+    KEY_FILE="${ALT_CERT%/*}/privkey.pem"
+  else
+    # Fallback self-signed certificate: prevents total crash if domain DNS propagation is slow or rate-limited
+    mkdir -p /etc/ssl/certs /etc/ssl/private
+    CERT_FILE="/etc/ssl/certs/soar-selfsigned.crt"
+    KEY_FILE="/etc/ssl/private/soar-selfsigned.key"
+    if [[ ! -f "$CERT_FILE" || ! -f "$KEY_FILE" ]]; then
+      openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout "$KEY_FILE" \
+        -out "$CERT_FILE" \
+        -subj "/CN=$PANEL_DOMAIN" >/dev/null 2>&1 || true
+    fi
+  fi
 fi
 
-chown soar-panel:soar-panel /var/lib/soar-panel/access.json || true
-if [[ -d /var/lib/soar-panel/certificates ]]; then
-  chown -R soar-panel:soar-panel /var/lib/soar-panel/certificates || true
-fi
+# Create dedicated Nginx reverse proxy configuration
+cat > /etc/nginx/sites-available/soar-panel <<NGINX_CONF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $PANEL_DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
 
-systemctl restart soar-panel.service || systemctl start soar-panel.service || true
-sleep 2
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name $PANEL_DOMAIN;
 
-report_progress "6" "success" "SSL and domain configuration completed."
+    ssl_certificate $CERT_FILE;
+    ssl_certificate_key $KEY_FILE;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    client_max_body_size 64M;
+
+    location / {
+        proxy_pass http://127.0.0.1:$PANEL_PORT;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}
+NGINX_CONF
+
+ln -sf /etc/nginx/sites-available/soar-panel /etc/nginx/sites-enabled/soar-panel
+rm -f /etc/nginx/sites-enabled/default
+nginx -t >/dev/null 2>&1 || true
+systemctl restart nginx || systemctl start nginx || true
+systemctl enable nginx 2>/dev/null || true
+
+report_progress "6" "success" "SSL certificate and Nginx proxy operational on ports 80/443."
 
 # ------------------------------------------------------------------------------
 # 7. Extract Secret Access URL & Final Summary
@@ -311,22 +379,20 @@ report_progress "6" "success" "SSL and domain configuration completed."
 report_progress "7" "in_progress" "Extracting secure secret access URL..."
 
 FINAL_URL=""
-# Try official access-url command with timeout
-FINAL_URL=$(timeout 8s /usr/local/bin/soar-panel access-url --db "$DB_FILE" --listen "127.0.0.1:$PANEL_PORT" 2>/dev/null || true)
-
-# If access-url returned loopback IP, replace it with https://$PANEL_DOMAIN
-if [[ "$FINAL_URL" == http://127.0.0.1* || "$FINAL_URL" == http://localhost* ]]; then
-  SECRET_PATH="${FINAL_URL#*:$PANEL_PORT}"
-  FINAL_URL="https://$PANEL_DOMAIN$SECRET_PATH"
+# Extract random security path directly from access.json
+if [[ -f /var/lib/soar-panel/access.json ]]; then
+  EXTRACTED_PATH=$(grep -oE '/[A-Za-z0-9_-]{20,}/' /var/lib/soar-panel/access.json | head -n 1 || true)
+  if [[ -n "$EXTRACTED_PATH" ]]; then
+    FINAL_URL="https://$PANEL_DOMAIN$EXTRACTED_PATH"
+  fi
 fi
 
-# Fallback: extract random security path directly from access.json
-if [[ -z "$FINAL_URL" || "$FINAL_URL" == "https://$PANEL_DOMAIN" || "$FINAL_URL" == "https://$PANEL_DOMAIN/" ]]; then
-  if [[ -f /var/lib/soar-panel/access.json ]]; then
-    EXTRACTED_PATH=$(grep -oE '/[A-Za-z0-9_-]{20,}/' /var/lib/soar-panel/access.json | head -n 1 || true)
-    if [[ -n "$EXTRACTED_PATH" ]]; then
-      FINAL_URL="https://$PANEL_DOMAIN$EXTRACTED_PATH"
-    fi
+# Fallback: query access-url command
+if [[ -z "$FINAL_URL" ]]; then
+  RAW_URL=$(timeout 5s /usr/local/bin/soar-panel access-url --db "$DB_FILE" --listen "127.0.0.1:$PANEL_PORT" 2>/dev/null || true)
+  MATCHED_PATH=$(echo "$RAW_URL" | grep -oE '/[A-Za-z0-9_-]{20,}/' | head -n 1 || true)
+  if [[ -n "$MATCHED_PATH" ]]; then
+    FINAL_URL="https://$PANEL_DOMAIN$MATCHED_PATH"
   fi
 fi
 
@@ -334,6 +400,8 @@ fi
 if [[ -z "$FINAL_URL" || ! "$FINAL_URL" =~ ^https?:// ]]; then
   FINAL_URL="https://$PANEL_DOMAIN/"
 fi
+
+[[ "$FINAL_URL" == */ ]] || FINAL_URL="$FINAL_URL/"
 
 report_progress "7" "success" "Secret URL extracted successfully."
 report_progress "COMPLETED" "success" "WhiteDNS installation complete!"

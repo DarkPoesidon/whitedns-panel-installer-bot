@@ -136,14 +136,7 @@ bot.command('update', async (ctx) => {
 });
 
 bot.command('uninstall', async (ctx) => {
-  return ctx.replyWithMarkdown(
-    `🗑 **مدیریت حذف و لغو نصب (Uninstall)**\n\nلطفاً انتخاب فرمایید کدام بخش را می‌خواهید حذف کنید:\n\n۱. **حذف پنل WhiteDNS از روی سرور مقصد:** پاک‌سازی کامل باینری‌ها، سرویس‌های daemon، و تنظیمات DNS از سرور تانل شما.\n۲. **حذف کامل خود این ربات از سرور لینوکس:** متوقف‌سازی سرویس systemd و پاک‌سازی کامل فایل‌های این ربات از سرور میزبان.`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback('🗑 حذف پنل WhiteDNS از سرور مقصد', 'menu:uninstall_soar')],
-      [Markup.button.callback('🛑 حذف خود این ربات از سرور لینوکس', 'menu:uninstall_bot')],
-      [Markup.button.callback('❌ انصراف', 'cancel')]
-    ])
-  );
+  return renderUninstallSoar(ctx, ctx.chat.id, false);
 });
 
 bot.command(['reset', 'cancel'], async (ctx) => {
@@ -451,47 +444,17 @@ bot.action('cancel', (ctx) => {
   );
 });
 
-bot.action('menu:uninstall', (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
-  return ctx.editMessageText(
-    `🗑 **مدیریت حذف و لغو نصب (Uninstall)**\n\nلطفاً انتخاب فرمایید کدام بخش را می‌خواهید حذف کنید:\n\n۱. **حذف پنل WhiteDNS از روی سرور مقصد:** پاک‌سازی کامل باینری‌ها، سرویس‌های daemon، و تنظیمات DNS از سرور تانل شما.\n۲. **حذف کامل خود این ربات از سرور لینوکس:** متوقف‌سازی سرویس systemd و پاک‌سازی کامل این ربات از سرور میزبان.`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback('🗑 حذف پنل WhiteDNS از سرور مقصد', 'menu:uninstall_soar')],
-      [Markup.button.callback('🛑 حذف خود این ربات از سرور لینوکس', 'menu:uninstall_bot')],
-      [Markup.button.callback('❌ انصراف', 'cancel')]
-    ])
-  );
-});
-
-bot.action('menu:uninstall_bot', (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
-  return ctx.editMessageText(
-    `🛑 **راهنمای حذف کامل ربات از سرور لینوکس:**\n\nجهت متوقف‌سازی، حذف سرویس پایدار systemd و پاک‌سازی کامل این ربات از روی سرور میزبان، کافیست دستور زیر را با دسترسی root در ترمینال سرور اجرا فرمایید:\n\n\`bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/uninstall.sh)\`\n\nیا در پوشه پروژه:\n\`cd /opt/whitedns-bot && bash uninstall.sh\`\n\nاین دستور بدون باقی‌گذاشتن هیچ ردپایی، تمام فایل‌ها و سرویس‌های ربات را پاک می‌کند.`,
-    {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🔙 بازگشت', callback_data: 'menu:uninstall' }]
-        ]
-      }
-    }
-  );
-});
-
-bot.action('menu:uninstall_soar', (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
-  const chatId = ctx.chat.id;
+function renderUninstallSoar(ctx, chatId, isEdit = false) {
   const list = listDeployments(chatId);
 
   if (!list || list.length === 0) {
     saveSession(chatId, { step: 'AWAITING_UNINSTALL_IP' });
-    return ctx.editMessageText(
-      `🗑 **حذف پنل WhiteDNS از روی سرور**\n\nهیچ سرور ثبت‌شده‌ای در تاریخچه شما یافت نشد.\n\n📌 لطفاً **آی‌پی سرور (IPv4)** که می‌خواهید پنل از روی آن حذف شود را ارسال فرمایید:`,
-      Markup.inlineKeyboard([
-        [Markup.button.callback('🔙 بازگشت', 'menu:uninstall')],
-        [Markup.button.callback('❌ انصراف', 'cancel')]
-      ])
-    );
+    const msg = `🗑 **حذف پنل WhiteDNS از روی سرور**\n\nهیچ سرور ثبت‌شده‌ای در تاریخچه شما یافت نشد.\n\n📌 لطفاً **آی‌پی سرور (IPv4)** که می‌خواهید پنل WhiteDNS از روی آن حذف شود را ارسال فرمایید:\n_(مثال: \`194.26.11.20\`)_`;
+    const buttons = Markup.inlineKeyboard([
+      [Markup.button.callback('❌ انصراف و بازگشت', 'cancel')]
+    ]);
+    if (isEdit) return ctx.editMessageText(msg, buttons);
+    return ctx.replyWithMarkdown(msg, buttons);
   }
 
   const keyboard = list.map(d => ([
@@ -500,13 +463,17 @@ bot.action('menu:uninstall_soar', (ctx) => {
 
   keyboard.push([
     Markup.button.callback('✏️ ورود دستی آی‌پی سرور دیگر', 'uninst_manual'),
-    Markup.button.callback('🔙 بازگشت', 'menu:uninstall')
+    Markup.button.callback('❌ انصراف', 'cancel')
   ]);
 
-  return ctx.editMessageText(
-    `👇 **سروری که می‌خواهید پنل WhiteDNS از روی آن حذف شود را انتخاب کنید:**`,
-    Markup.inlineKeyboard(keyboard)
-  );
+  const msg = `🗑 **مدیریت حذف پنل WhiteDNS از روی سرور مقصد**\n\n👇 لطفاً سروری که می‌خواهید پنل WhiteDNS و تنظیمات تانل DNS از روی آن پاک‌سازی شود را انتخاب فرمایید:`;
+  if (isEdit) return ctx.editMessageText(msg, Markup.inlineKeyboard(keyboard));
+  return ctx.replyWithMarkdown(msg, Markup.inlineKeyboard(keyboard));
+}
+
+bot.action('menu:uninstall_soar', (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  return renderUninstallSoar(ctx, ctx.chat.id, true);
 });
 
 bot.action('uninst_manual', (ctx) => {

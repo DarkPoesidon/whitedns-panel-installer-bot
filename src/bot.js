@@ -3,11 +3,22 @@ import { exec } from 'child_process';
 import util from 'util';
 import { BOT_TOKEN, CF_TEMPLATE_URL } from './config.js';
 import { getSession, saveSession, resetSession, addDeployment, listDeployments, deleteDeploymentByIp } from './db.js';
-import { verifyToken, listZones, setupSoarDnsRecords, deleteSoarDnsRecords } from './cloudflare.js';
+import {
+  verifyToken,
+  listZones,
+  setupSoarDnsRecords,
+  deleteSoarDnsRecords,
+  listDnsRecords,
+  createDnsRecord,
+  updateDnsRecord,
+  deleteDnsRecord,
+  getDnsRecord
+} from './cloudflare.js';
 import { installOverSSH, uninstallOverSSH, repairOverSSH } from './ssh-installer.js';
 import { generateStrongPassword, renderProgressBox, renderCompletionCard, renderErrorCard, renderRepairProgressBox, renderRepairCard } from './ui.js';
 
 const execPromise = util.promisify(exec);
+const tempDnsState = new Map();
 
 if (!BOT_TOKEN) {
   console.error('❌ FATAL: BOT_TOKEN is missing! Please provide BOT_TOKEN in .env file.');
@@ -25,6 +36,7 @@ async function registerCommands() {
       { command: 'start', description: '🚀 شروع و نصب پنل WhiteDNS' },
       { command: 'status', description: '📊 مشاهده سرورها و پنل‌های فعال' },
       { command: 'repair', description: '🛠 عیب‌یابی و تعمیر خودکار سرور' },
+      { command: 'dns', description: '⚙️ مدیریت رکوردهای DNS کلودفلر' },
       { command: 'update', description: '🔄 به‌روزرسانی ربات به آخرین نسخه' },
       { command: 'uninstall', description: '🗑 حذف پنل WhiteDNS از سرور' },
       { command: 'help', description: '❓ راهنمای استفاده و پیش‌نیازها' },
@@ -55,10 +67,11 @@ bot.command('start', async (ctx) => {
 
 bot.command('help', async (ctx) => {
   return ctx.replyWithMarkdown(
-    `📖 **راهنمای جامع ربات نصب خودکار WhiteDNS**\n\n🔹 **این ربات چه کار می‌کند؟**\nاین ربات مستقیماً از طریق پروتکل امن SSH به سرور شما متصل شده، تانل DNS (Soar و Cotten) را کانفیگ کرده و پنل وب مدیریتی را با آدرس امن فعال می‌کند.\n\n🔹 **پیش‌نیازها:**\n۱. یک سرور خام با سیستم‌عامل Ubuntu 22/24 یا Debian 12/13.\n۲. یک دامنه متصل به اکانت کلودفلر.\n\n🔹 **دستورات منو:**\n• /start - شروع فرآیند نصب پنل جدید\n• /status - مشاهده پنل‌ها و لینک‌های فعال\n• /repair - عیب‌یابی خودکار، حل تداخل پورت ۵۳، صدور مجدد SSL و تعمیر پنل\n• /update - به‌روزرسانی ربات به آخرین نسخه\n• /uninstall - حذف پنل WhiteDNS از سرور\n• /reset - ریست و لغو مرحله جاری`,
+    `📖 **راهنمای جامع ربات نصب خودکار WhiteDNS**\n\n🔹 **این ربات چه کار می‌کند؟**\nاین ربات مستقیماً از طریق پروتکل امن SSH به سرور شما متصل شده، تانل DNS (Soar و Cotten) را کانفیگ کرده و پنل وب مدیریتی را با آدرس امن فعال می‌کند.\n\n🔹 **پیش‌نیازها:**\n۱. یک سرور خام با سیستم‌عامل Ubuntu 22/24 یا Debian 12/13.\n۲. یک دامنه متصل به اکانت کلودفلر.\n\n🔹 **دستورات منو:**\n• /start - شروع فرآیند نصب پنل جدید\n• /status - مشاهده پنل‌ها و لینک‌های فعال\n• /repair - عیب‌یابی خودکار، حل تداخل پورت ۵۳، صدور مجدد SSL و تعمیر پنل\n• /dns - مدیریت رکوردهای DNS کلودفلر (حذف / ویرایش / افزودن)\n• /update - به‌روزرسانی ربات به آخرین نسخه\n• /uninstall - حذف پنل WhiteDNS از سرور\n• /reset - ریست و لغو مرحله جاری`,
     Markup.inlineKeyboard([
       [Markup.button.callback('🚀 شروع نصب جدید', 'cmd:start')],
-      [Markup.button.callback('🛠 عیب‌یابی و تعمیر سرور', 'menu:repair')]
+      [Markup.button.callback('🛠 عیب‌یابی و تعمیر سرور', 'menu:repair')],
+      [Markup.button.callback('⚙️ مدیریت رکوردهای DNS', 'cmd:dns')]
     ])
   );
 });
@@ -98,6 +111,22 @@ bot.command('status', async (ctx) => {
 
 bot.command(['repair', 'fix'], async (ctx) => {
   return renderRepairList(ctx, ctx.chat.id, false);
+});
+
+bot.command(['dns', 'cloudflare'], async (ctx) => {
+  const chatId = ctx.chat.id;
+  const session = getSession(chatId);
+  if (session && session.cfToken) {
+    return renderZonesForDns(ctx, chatId, session.cfToken, false);
+  }
+  saveSession(chatId, { step: 'AWAITING_DNS_CF_AUTH' });
+  return ctx.replyWithMarkdown(
+    `⚙️ **سامانه مدیریت رکوردهای DNS کلودفلر**\n\nجهت مشاهده، افزودن، ویرایش و حذف رکوردهای DNS دامنه، لطفاً **توکن API** یا **ایمیل اکانت کلودفلر** خود را ارسال فرمایید:`,
+    Markup.inlineKeyboard([
+      [Markup.button.url('🚀 ساخت توکن در کلودفلر', CF_TEMPLATE_URL)],
+      [Markup.button.callback('❌ انصراف', 'cancel')]
+    ])
+  );
 });
 
 bot.command('update', async (ctx) => {
@@ -511,6 +540,112 @@ bot.on('text', async (ctx) => {
       );
     }
   }
+
+  // 11. AWAITING DNS CLOUDFLARE AUTH (FROM /dns)
+  if (session.step === 'AWAITING_DNS_CF_AUTH') {
+    await ctx.deleteMessage().catch(() => {});
+    const verify = await verifyToken(text);
+    if (!verify.ok) {
+      return ctx.replyWithMarkdown(
+        `❌ **توکن یا اطلاعات کلودفلر نامعتبر است:**\n\`${verify.error || 'عدم دسترسی'}\`\n\nلطفاً توکن جدید ساخته و ارسال فرمایید:`,
+        Markup.inlineKeyboard([
+          [Markup.button.url('🚀 ساخت توکن در کلودفلر', CF_TEMPLATE_URL)],
+          [Markup.button.callback('❌ انصراف', 'cancel')]
+        ])
+      );
+    }
+    const auth = verify.resolvedAuth || text;
+    saveSession(chatId, { cfToken: auth, step: 'SELECTING_ZONE_FOR_DNS' });
+    return renderZonesForDns(ctx, chatId, auth, false);
+  }
+
+  // 12. AWAITING DNS ADD NAME
+  if (session.step === 'AWAITING_DNS_ADD_NAME') {
+    const rawName = text.trim();
+    const st = tempDnsState.get(chatId) || {};
+    st.name = rawName;
+    tempDnsState.set(chatId, st);
+
+    saveSession(chatId, { step: 'AWAITING_DNS_ADD_CONTENT' });
+    return ctx.replyWithMarkdown(
+      `📌 نام رکورد: \`${rawName}\`\n\nلطفاً **مقدار یا آی‌پی (Value / Content)** این رکورد را ارسال فرمایید:\n_(برای رکورد A: آی‌پی سرور مثل \`173.230.134.64\` | برای CNAME: نام هاست)_`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback('❌ انصراف', `cf_dns:${st.zoneId}:${st.domain}`)]
+      ])
+    );
+  }
+
+  // 13. AWAITING DNS ADD CONTENT
+  if (session.step === 'AWAITING_DNS_ADD_CONTENT') {
+    const content = text.trim();
+    const st = tempDnsState.get(chatId) || {};
+    st.content = content;
+    tempDnsState.set(chatId, st);
+
+    // If type is NS or TXT, proxy is not applicable
+    if (st.type === 'NS' || st.type === 'TXT') {
+      const waitMsg = await ctx.reply('⏳ در حال ثبت رکورد در کلودفلر...');
+      const createRes = await createDnsRecord(session.cfToken, st.zoneId, {
+        type: st.type,
+        name: st.name,
+        content: st.content,
+        proxied: false
+      });
+      await ctx.telegram.deleteMessage(chatId, waitMsg.message_id).catch(() => {});
+      saveSession(chatId, { step: 'IDLE' });
+      tempDnsState.delete(chatId);
+
+      if (!createRes.ok) {
+        return ctx.replyWithMarkdown(
+          `❌ **خطا در ثبت رکورد DNS:**\n\`${createRes.error}\``,
+          Markup.inlineKeyboard([
+            [Markup.button.callback('🔙 بازگشت به لیست رکوردها', `cf_dns:${st.zoneId}:${st.domain}`)]
+          ])
+        );
+      }
+      return renderDnsManager(ctx, chatId, st.zoneId, st.domain, 1, false, `✅ رکورد [${st.type}] ${st.name} با موفقیت ایجاد شد.`);
+    }
+
+    // For A, AAAA, CNAME -> ask for proxy status
+    saveSession(chatId, { step: 'AWAITING_DNS_ADD_PROXY' });
+    return ctx.replyWithMarkdown(
+      `🌐 **وضعیت پروکسی کلودفلر برای رکورد \`${st.name}\`:**\n\n• مقدار: \`${content}\`\n• نوع: \`${st.type}\`\n\nآیا می‌خواهید ترافیک این رکورد از شبکه CDN کلودفلر عبور کند؟\n_(توجه: برای پنل WhiteDNS و تانل، پروکسی باید خاموش / DNS Only باشد)_`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback('🔘 پروکسی خاموش (DNS Only - توصیه شده)', `cf_add_proxy:${st.zoneId}:${st.domain}:0`)],
+        [Markup.button.callback('☁️ پروکسی روشن (Proxied)', `cf_add_proxy:${st.zoneId}:${st.domain}:1`)],
+        [Markup.button.callback('❌ انصراف', `cf_dns:${st.zoneId}:${st.domain}`)]
+      ])
+    );
+  }
+
+  // 14. AWAITING DNS EDIT VALUE
+  if (session.step === 'AWAITING_DNS_EDIT_VAL') {
+    const newVal = text.trim();
+    const st = tempDnsState.get(chatId) || {};
+    if (!st.recordId) {
+      saveSession(chatId, { step: 'IDLE' });
+      return ctx.reply('⚠️ جلسه ویرایش منقضی شده است.');
+    }
+
+    const waitMsg = await ctx.reply('⏳ در حال به‌روزرسانی رکورد در کلودفلر...');
+    const updateRes = await updateDnsRecord(session.cfToken, st.zoneId, st.recordId, {
+      content: newVal
+    });
+    await ctx.telegram.deleteMessage(chatId, waitMsg.message_id).catch(() => {});
+    saveSession(chatId, { step: 'IDLE' });
+    tempDnsState.delete(chatId);
+
+    if (!updateRes.ok) {
+      return ctx.replyWithMarkdown(
+        `❌ **خطا در به‌روزرسانی رکورد:**\n\`${updateRes.error}\``,
+        Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 بازگشت به لیست رکوردها', `cf_dns:${st.zoneId}:${st.domain}`)]
+        ])
+      );
+    }
+
+    return renderDnsManager(ctx, chatId, st.zoneId, st.domain, 1, false, `✅ مقدار رکورد با موفقیت به ${newVal} تغییر یافت.`);
+  }
 });
 
 // ----------------------------------------------------------------------------
@@ -788,8 +923,387 @@ bot.action(/zone:(.+):(.+)/, (ctx) => {
   saveSession(chatId, { zoneId, domain, step: 'AWAITING_SSH_IP' });
 
   return ctx.editMessageText(
-    `🌐 دامنه انتخاب‌شده: \`${domain}\`\n\n📌 اکنون لطفاً **آدرس IPv4 عمومی سرور (VPS)** خود را ارسال کنید:\n_(مثال: \`194.26.11.20\`)_\n\n💡 _همچنین می‌توانید مشخصات کامل را یکجا بفرستید:_\n\`IP:Port:User:Password\``,
+    `🌐 دامنه انتخاب‌شده: \`${domain}\`\n\n📌 اکنون لطفاً **آدرس IPv4 عمومی سرور (VPS)** خود را ارسال فرمایید:\n_(مثال: \`194.26.11.20\`)_\n\n💡 _همچنین می‌توانید مشخصات کامل را یکجا بفرستید:_\n\`IP:Port:User:Password\`\n\nیا در صورت تمایل می‌توانید رکوردهای DNS این دامنه را بررسی، ویرایش یا حذف نمایید:`,
     Markup.inlineKeyboard([
+      [Markup.button.callback('⚙️ مدیریت رکوردهای DNS این دامنه', `cf_dns:${zoneId}:${domain}`)],
+      [
+        Markup.button.callback('🔙 تغییر دامنه', 'back:select_zone'),
+        Markup.button.callback('❌ انصراف', 'cancel')
+      ]
+    ])
+  );
+});
+
+// ----------------------------------------------------------------------------
+// CLOUDFLARE DNS MANAGEMENT FUNCTIONS & HANDLERS
+// ----------------------------------------------------------------------------
+
+async function renderZonesForDns(ctx, chatId, authInput, isEdit = false) {
+  let statusMsg = null;
+  if (!isEdit) {
+    statusMsg = await ctx.reply('⏳ در حال دریافت لیست دامنه‌های کلودفلر...');
+  }
+  const zonesRes = await listZones(authInput);
+
+  if (!zonesRes.ok || !zonesRes.zones?.length) {
+    const errorText = `⚠️ **هیچ دامنه‌ای در اکانت کلودفلر شما یافت نشد!**\nعلت: ${zonesRes.error || 'عدم دسترسی'}`;
+    if (isEdit) return ctx.editMessageText(errorText);
+    return ctx.telegram.editMessageText(chatId, statusMsg.message_id, undefined, errorText);
+  }
+
+  const keyboard = zonesRes.zones.map(z => ([
+    Markup.button.callback(`🌐 مدیریت DNS: ${z.name}`, `cf_dns:${z.id}:${z.name}`)
+  ]));
+
+  keyboard.push([
+    Markup.button.callback('❌ انصراف و خروج', 'cancel')
+  ]);
+
+  const msg = `🌐 **سامانه مدیریت رکوردهای DNS کلودفلر**\n\n👇 لطفاً دامنه‌ای که می‌خواهید رکوردهای DNS آن را مشاهده، افزوده، ویرایش یا حذف کنید انتخاب فرمایید:`;
+
+  if (isEdit) return ctx.editMessageText(msg, Markup.inlineKeyboard(keyboard));
+  if (statusMsg) {
+    return ctx.telegram.editMessageText(chatId, statusMsg.message_id, undefined, msg, {
+      parse_mode: 'Markdown',
+      reply_markup: Markup.inlineKeyboard(keyboard).reply_markup
+    });
+  }
+  return ctx.replyWithMarkdown(msg, Markup.inlineKeyboard(keyboard));
+}
+
+async function renderDnsManager(ctx, chatId, zoneId, domain, page = 1, isEdit = false, toastNotice = '') {
+  const session = getSession(chatId);
+  const auth = session?.cfToken;
+  if (!auth) {
+    return ctx.replyWithMarkdown('⚠️ دسترسی به کلودفلر یافت نشد. لطفاً دستور /dns را ارسال نمایید.');
+  }
+
+  const res = await listDnsRecords(auth, zoneId, 1, 100);
+  if (!res.ok) {
+    const errText = `❌ **خطا در دریافت رکوردهای DNS کلودفلر:**\n\`${res.error}\``;
+    const buttons = Markup.inlineKeyboard([
+      [Markup.button.callback('🔄 تلاش مجدد', `cf_dns:${zoneId}:${domain}`)],
+      [Markup.button.callback('🔙 بازگشت به دامنه‌ها', 'back:select_zone')]
+    ]);
+    if (isEdit) return ctx.editMessageText(errText, buttons);
+    return ctx.replyWithMarkdown(errText, buttons);
+  }
+
+  const allRecords = res.records || [];
+  const pageSize = 5;
+  const totalPages = Math.ceil(allRecords.length / pageSize) || 1;
+  const curPage = Math.min(Math.max(1, page), totalPages);
+  const startIdx = (curPage - 1) * pageSize;
+  const pageRecords = allRecords.slice(startIdx, startIdx + pageSize);
+
+  let text = `⚙️ **مدیریت رکوردهای DNS دامنه** \`${domain}\`\n📊 کل رکوردها: **${allRecords.length}** (صفحه ${curPage} از ${totalPages})\n\n`;
+
+  if (toastNotice) {
+    text += `🔔 ${toastNotice}\n\n`;
+  }
+
+  if (pageRecords.length === 0) {
+    text += `_هیچ رکوردی برای این دامنه ثبت نشده است._\n\n`;
+  } else {
+    pageRecords.forEach((r, idx) => {
+      const num = startIdx + idx + 1;
+      const proxyIcon = r.proxied ? '☁️ Proxied' : '🔘 DNS Only';
+      const displayContent = r.content.length > 28 ? r.content.substring(0, 25) + '...' : r.content;
+      text += `${num}. [**${r.type}**] \`${r.name}\`\n   ➔ \`${displayContent}\` (${proxyIcon})\n`;
+    });
+    text += `\n_(راهنما: ☁️ پروکسی فعال | 🔘 پروکسی غیرفعال / مستقیم)_\n`;
+  }
+
+  const keyboard = [];
+
+  if (pageRecords.length > 0) {
+    const actionRows = pageRecords.map((r, idx) => {
+      const num = startIdx + idx + 1;
+      return [
+        Markup.button.callback(`✏️ رکورد #${num}`, `cf_edit:${zoneId}:${domain}:${r.id}`),
+        Markup.button.callback(`🗑 حذف #${num}`, `cf_del:${zoneId}:${domain}:${r.id}`)
+      ];
+    });
+    keyboard.push(...actionRows);
+  }
+
+  const navRow = [];
+  if (curPage > 1) {
+    navRow.push(Markup.button.callback('◀️ صفحه قبلی', `cf_page:${zoneId}:${domain}:${curPage - 1}`));
+  }
+  if (curPage < totalPages) {
+    navRow.push(Markup.button.callback('صفحه بعدی ▶️', `cf_page:${zoneId}:${domain}:${curPage + 1}`));
+  }
+  if (navRow.length > 0) {
+    keyboard.push(navRow);
+  }
+
+  keyboard.push([
+    Markup.button.callback('➕ افزودن رکورد DNS جدید', `cf_add:${zoneId}:${domain}`),
+    Markup.button.callback('🧹 پاک‌سازی رکوردهای تانل', `cf_clean:${zoneId}:${domain}`)
+  ]);
+
+  keyboard.push([
+    Markup.button.callback('🚀 ادامه نصب پنل (ورود آی‌پی سرور)', `cf_continue:${zoneId}:${domain}`),
+    Markup.button.callback('🔙 بازگشت به لیست دامنه‌ها', 'back:select_zone')
+  ]);
+
+  if (isEdit) {
+    return ctx.editMessageText(text, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } });
+  }
+  return ctx.replyWithMarkdown(text, Markup.inlineKeyboard(keyboard));
+}
+
+bot.action('cmd:dns', (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  const session = getSession(chatId);
+  if (session && session.cfToken) {
+    return renderZonesForDns(ctx, chatId, session.cfToken, true);
+  }
+  saveSession(chatId, { step: 'AWAITING_DNS_CF_AUTH' });
+  return ctx.editMessageText(
+    `⚙️ **سامانه مدیریت رکوردهای DNS کلودفلر**\n\nجهت مشاهده، افزودن، ویرایش و حذف رکوردهای DNS دامنه، لطفاً **توکن API** یا **ایمیل اکانت کلودفلر** خود را ارسال فرمایید:`,
+    Markup.inlineKeyboard([
+      [Markup.button.url('🚀 ساخت توکن در کلودفلر', CF_TEMPLATE_URL)],
+      [Markup.button.callback('❌ انصراف', 'cancel')]
+    ])
+  );
+});
+
+bot.action(/cf_dns:(.+):(.+)/, (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const zoneId = ctx.match[1];
+  const domain = ctx.match[2];
+  return renderDnsManager(ctx, ctx.chat.id, zoneId, domain, 1, true);
+});
+
+bot.action(/cf_page:(.+):(.+):([0-9]+)/, (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const zoneId = ctx.match[1];
+  const domain = ctx.match[2];
+  const page = parseInt(ctx.match[3], 10) || 1;
+  return renderDnsManager(ctx, ctx.chat.id, zoneId, domain, page, true);
+});
+
+bot.action(/cf_add:(.+):(.+)/, (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const zoneId = ctx.match[1];
+  const domain = ctx.match[2];
+
+  return ctx.editMessageText(
+    `➕ **افزودن رکورد DNS جدید برای دامنه:** \`${domain}\`\n\nلطفاً نوع رکورد مورد نظر خود را انتخاب فرمایید:`,
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback('📌 رکورد A (IPv4)', `cf_add_type:${zoneId}:${domain}:A`),
+        Markup.button.callback('🔗 رکورد CNAME', `cf_add_type:${zoneId}:${domain}:CNAME`)
+      ],
+      [
+        Markup.button.callback('🌐 رکورد NS', `cf_add_type:${zoneId}:${domain}:NS`),
+        Markup.button.callback('📝 رکورد TXT', `cf_add_type:${zoneId}:${domain}:TXT`)
+      ],
+      [
+        Markup.button.callback('🔙 بازگشت به لیست رکوردها', `cf_dns:${zoneId}:${domain}`)
+      ]
+    ])
+  );
+});
+
+bot.action(/cf_add_type:(.+):(.+):(.+)/, (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  const zoneId = ctx.match[1];
+  const domain = ctx.match[2];
+  const type = ctx.match[3];
+
+  tempDnsState.set(chatId, { zoneId, domain, type });
+  saveSession(chatId, { step: 'AWAITING_DNS_ADD_NAME' });
+
+  return ctx.editMessageText(
+    `➕ **ثبت رکورد جدید [${type}] برای دامنه:** \`${domain}\`\n\n📌 لطفاً **نام یا ساب‌دامنه** را ارسال فرمایید:\n(مثلاً \`panel\` برای panel.${domain} یا \`@\` برای دامنه اصلی \`${domain}\`):`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('❌ انصراف و بازگشت', `cf_dns:${zoneId}:${domain}`)]
+    ])
+  );
+});
+
+bot.action(/cf_add_proxy:(.+):(.+):([01])/, async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  const zoneId = ctx.match[1];
+  const domain = ctx.match[2];
+  const proxied = ctx.match[3] === '1';
+
+  const st = tempDnsState.get(chatId) || {};
+  const session = getSession(chatId);
+
+  await ctx.editMessageText('⏳ در حال ثبت رکورد در کلودفلر...');
+
+  const createRes = await createDnsRecord(session.cfToken, zoneId, {
+    type: st.type,
+    name: st.name,
+    content: st.content,
+    proxied
+  });
+
+  saveSession(chatId, { step: 'IDLE' });
+  tempDnsState.delete(chatId);
+
+  if (!createRes.ok) {
+    return ctx.editMessageText(
+      `❌ **خطا در ثبت رکورد DNS:**\n\`${createRes.error}\``,
+      Markup.inlineKeyboard([
+        [Markup.button.callback('🔙 بازگشت به لیست رکوردها', `cf_dns:${zoneId}:${domain}`)]
+      ])
+    );
+  }
+
+  return renderDnsManager(ctx, chatId, zoneId, domain, 1, true, `✅ رکورد [${st.type}] ${st.name} با موفقیت افزوده شد.`);
+});
+
+bot.action(/cf_del:(.+):(.+):(.+)/, async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  const zoneId = ctx.match[1];
+  const domain = ctx.match[2];
+  const recordId = ctx.match[3];
+  const session = getSession(chatId);
+
+  const getRes = await getDnsRecord(session.cfToken, zoneId, recordId);
+  if (!getRes.ok) {
+    return ctx.editMessageText(`❌ رکورد یافت نشد یا دسترسی وجود ندارد.`, Markup.inlineKeyboard([
+      [Markup.button.callback('🔙 بازگشت', `cf_dns:${zoneId}:${domain}`)]
+    ]));
+  }
+
+  const r = getRes.record;
+  return ctx.editMessageText(
+    `⚠️ **تایید حذف رکورد DNS:**\n\n• **نوع:** \`${r.type}\`\n• **نام:** \`${r.name}\`\n• **مقدار:** \`${r.content}\`\n• **پروکسی:** ${r.proxied ? '☁️ روشن' : '🔘 خاموش'}\n\nآیا از حذف دائمی این رکورد اطمینان دارید؟`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('🗑 بله، حذف شود', `cf_del_conf:${zoneId}:${domain}:${recordId}`)],
+      [Markup.button.callback('❌ خیر، بازگشت', `cf_dns:${zoneId}:${domain}`)]
+    ])
+  );
+});
+
+bot.action(/cf_del_conf:(.+):(.+):(.+)/, async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  const zoneId = ctx.match[1];
+  const domain = ctx.match[2];
+  const recordId = ctx.match[3];
+  const session = getSession(chatId);
+
+  const delRes = await deleteDnsRecord(session.cfToken, zoneId, recordId);
+  if (!delRes.ok) {
+    return ctx.editMessageText(`❌ خطا در حذف رکورد: ${delRes.error}`, Markup.inlineKeyboard([
+      [Markup.button.callback('🔙 بازگشت', `cf_dns:${zoneId}:${domain}`)]
+    ]));
+  }
+
+  return renderDnsManager(ctx, chatId, zoneId, domain, 1, true, '🗑 رکورد با موفقیت حذف شد.');
+});
+
+bot.action(/cf_edit:(.+):(.+):(.+)/, async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  const zoneId = ctx.match[1];
+  const domain = ctx.match[2];
+  const recordId = ctx.match[3];
+  const session = getSession(chatId);
+
+  const getRes = await getDnsRecord(session.cfToken, zoneId, recordId);
+  if (!getRes.ok) {
+    return ctx.editMessageText(`❌ رکورد یافت نشد.`, Markup.inlineKeyboard([
+      [Markup.button.callback('🔙 بازگشت', `cf_dns:${zoneId}:${domain}`)]
+    ]));
+  }
+
+  const r = getRes.record;
+  const keyboard = [
+    [Markup.button.callback('✏️ تغییر مقدار / آی‌پی', `cf_edit_val:${zoneId}:${domain}:${recordId}`)]
+  ];
+
+  if (r.type === 'A' || r.type === 'AAAA' || r.type === 'CNAME') {
+    const toggleLabel = r.proxied ? '🔘 خاموش کردن پروکسی (DNS Only)' : '☁️ روشن کردن پروکسی (Proxied)';
+    keyboard.push([Markup.button.callback(toggleLabel, `cf_toggle_proxy:${zoneId}:${domain}:${recordId}`)]);
+  }
+
+  keyboard.push([
+    Markup.button.callback('🔙 بازگشت به لیست رکوردها', `cf_dns:${zoneId}:${domain}`)
+  ]);
+
+  return ctx.editMessageText(
+    `✏️ **مدیریت و ویرایش رکورد DNS:**\n\n• **نوع:** \`${r.type}\`\n• **نام:** \`${r.name}\`\n• **مقدار فعلی:** \`${r.content}\`\n• **وضعیت پروکسی:** ${r.proxied ? '☁️ روشن (Proxied)' : '🔘 خاموش (DNS Only)'}\n\nلطفاً عملیات مورد نظر را انتخاب فرمایید:`,
+    Markup.inlineKeyboard(keyboard)
+  );
+});
+
+bot.action(/cf_toggle_proxy:(.+):(.+):(.+)/, async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  const zoneId = ctx.match[1];
+  const domain = ctx.match[2];
+  const recordId = ctx.match[3];
+  const session = getSession(chatId);
+
+  const getRes = await getDnsRecord(session.cfToken, zoneId, recordId);
+  if (getRes.ok) {
+    const newProxied = !getRes.record.proxied;
+    await updateDnsRecord(session.cfToken, zoneId, recordId, { proxied: newProxied });
+  }
+
+  return renderDnsManager(ctx, chatId, zoneId, domain, 1, true, '🔄 وضعیت پروکسی رکورد با موفقیت تغییر یافت.');
+});
+
+bot.action(/cf_edit_val:(.+):(.+):(.+)/, async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  const zoneId = ctx.match[1];
+  const domain = ctx.match[2];
+  const recordId = ctx.match[3];
+  const session = getSession(chatId);
+
+  const getRes = await getDnsRecord(session.cfToken, zoneId, recordId);
+  const curVal = getRes.ok ? getRes.record.content : '';
+  const rName = getRes.ok ? getRes.record.name : domain;
+
+  tempDnsState.set(chatId, { zoneId, domain, recordId });
+  saveSession(chatId, { step: 'AWAITING_DNS_EDIT_VAL' });
+
+  return ctx.editMessageText(
+    `✏️ لطفاً **مقدار یا آی‌پی جدید** برای رکورد \`${rName}\` را ارسال فرمایید:\n\n_(مقدار فعلی: \`${curVal}\`)_`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('❌ انصراف و بازگشت', `cf_dns:${zoneId}:${domain}`)]
+    ])
+  );
+});
+
+bot.action(/cf_clean:(.+):(.+)/, async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  const zoneId = ctx.match[1];
+  const domain = ctx.match[2];
+  const session = getSession(chatId);
+
+  await ctx.editMessageText('⏳ در حال پاک‌سازی رکوردهای تانل WhiteDNS...');
+  await deleteSoarDnsRecords(session.cfToken, zoneId, domain);
+
+  return renderDnsManager(ctx, chatId, zoneId, domain, 1, true, '🧹 رکوردهای پیشین تانل WhiteDNS (ns-soar, soar, panel) با موفقیت پاک شدند.');
+});
+
+bot.action(/cf_continue:(.+):(.+)/, (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  const zoneId = ctx.match[1];
+  const domain = ctx.match[2];
+
+  saveSession(chatId, { zoneId, domain, step: 'AWAITING_SSH_IP' });
+
+  return ctx.editMessageText(
+    `🌐 دامنه انتخاب‌شده: \`${domain}\`\n\n📌 اکنون لطفاً **آدرس IPv4 عمومی سرور (VPS)** خود را ارسال فرمایید:\n_(مثال: \`194.26.11.20\`)_\n\n💡 _همچنین می‌توانید مشخصات کامل را یکجا بفرستید:_\n\`IP:Port:User:Password\``,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('⚙️ مدیریت مجدد رکوردهای DNS', `cf_dns:${zoneId}:${domain}`)],
       [
         Markup.button.callback('🔙 تغییر دامنه', 'back:select_zone'),
         Markup.button.callback('❌ انصراف', 'cancel')

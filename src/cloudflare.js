@@ -220,3 +220,120 @@ export async function deleteSoarDnsRecords(authInput, zoneId, domain) {
 
   return { ok: true, deletedCount };
 }
+
+/**
+ * Retrieves all DNS records for a given zone
+ */
+export async function listDnsRecords(authInput, zoneId, page = 1, perPage = 50) {
+  try {
+    const headers = getAuthHeaders(authInput);
+    const res = await fetch(`${CF_API_BASE}/zones/${zoneId}/dns_records?page=${page}&per_page=${perPage}&order=type`, {
+      method: 'GET',
+      headers
+    });
+    if (!res.ok) {
+      return { ok: false, error: `خطا در دریافت رکوردها: HTTP ${res.status}` };
+    }
+    const data = await res.json();
+    if (!data.success) {
+      return { ok: false, error: data.errors?.[0]?.message || 'خطا در ارتباط با کلودفلر' };
+    }
+    return {
+      ok: true,
+      records: data.result || [],
+      info: data.result_info || {}
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * Fetches a single DNS record by ID
+ */
+export async function getDnsRecord(authInput, zoneId, recordId) {
+  try {
+    const headers = getAuthHeaders(authInput);
+    const res = await fetch(`${CF_API_BASE}/zones/${zoneId}/dns_records/${recordId}`, {
+      method: 'GET',
+      headers
+    });
+    const data = await res.json();
+    if (!data.success) {
+      return { ok: false, error: data.errors?.[0]?.message || 'رکورد یافت نشد.' };
+    }
+    return { ok: true, record: data.result };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * Creates a new DNS record in Cloudflare
+ */
+export async function createDnsRecord(authInput, zoneId, { type, name, content, proxied = false, ttl = 1, comment = 'WhiteDNS Manager' }) {
+  try {
+    const headers = getAuthHeaders(authInput);
+    const payload = {
+      type: type.toUpperCase(),
+      name,
+      content,
+      proxied: !!proxied,
+      ttl: Number(ttl) || 1,
+      comment
+    };
+    const res = await fetch(`${CF_API_BASE}/zones/${zoneId}/dns_records`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!data.success) {
+      return { ok: false, error: data.errors?.[0]?.message || 'خطا در ثبت رکورد' };
+    }
+    return { ok: true, record: data.result };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * Updates an existing DNS record in Cloudflare
+ */
+export async function updateDnsRecord(authInput, zoneId, recordId, updates) {
+  try {
+    const headers = getAuthHeaders(authInput);
+    const res = await fetch(`${CF_API_BASE}/zones/${zoneId}/dns_records/${recordId}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify(updates)
+    });
+    const data = await res.json();
+    if (!data.success) {
+      return { ok: false, error: data.errors?.[0]?.message || 'خطا در به‌روزرسانی رکورد' };
+    }
+    return { ok: true, record: data.result };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * Deletes a single DNS record by ID
+ */
+export async function deleteDnsRecord(authInput, zoneId, recordId) {
+  try {
+    const headers = getAuthHeaders(authInput);
+    const res = await fetch(`${CF_API_BASE}/zones/${zoneId}/dns_records/${recordId}`, {
+      method: 'DELETE',
+      headers
+    });
+    const data = await res.json();
+    if (!data.success) {
+      return { ok: false, error: data.errors?.[0]?.message || 'خطا در حذف رکورد' };
+    }
+    return { ok: true, result: data.result };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}

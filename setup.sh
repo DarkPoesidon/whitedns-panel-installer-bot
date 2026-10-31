@@ -84,8 +84,11 @@ echo -e "${BLUE}[2/4] Installing dependencies (npm install)...${NC}"
 cd "$BOT_DIR"
 npm install --omit=dev
 
-# 5. Make script executable
-chmod +x "$BOT_DIR/scripts/install-soar.sh"
+# 5. Make scripts executable and create menu symlinks
+chmod +x "$BOT_DIR/scripts/install-soar.sh" "$BOT_DIR/scripts/uninstall-soar.sh" 2>/dev/null || true
+chmod +x "$BOT_DIR/menu.sh" "$BOT_DIR/update.sh" "$BOT_DIR/uninstall.sh" 2>/dev/null || true
+ln -sf "$BOT_DIR/menu.sh" /usr/local/bin/whitedns-bot
+ln -sf "$BOT_DIR/menu.sh" /usr/local/bin/bot
 
 # 6. Create systemd service
 SERVICE_FILE="/etc/systemd/system/whitedns-bot.service"
@@ -124,8 +127,11 @@ if systemctl is-active --quiet whitedns-bot.service; then
   echo -e "   WhiteDNS Bot successfully installed and active!"
   echo -e "======================================================${NC}"
   echo -e "Service Status: ${GREEN}Active (Running)${NC}"
+  echo -e "\n${BOLD}Terminal Management Menu:${NC}"
+  echo -e "  Type ${CYAN}whitedns-bot${NC} or ${CYAN}bot${NC} anytime to open the management dashboard!"
   echo -e "\nNow open Telegram and send ${CYAN}/start${NC} to your bot."
   echo -e "\nUseful server commands:"
+  echo -e "  Open Menu:        ${YELLOW}whitedns-bot${NC} (or ${YELLOW}bot${NC})"
   echo -e "  View live logs:   ${YELLOW}journalctl -u whitedns-bot -f${NC}"
   echo -e "  Restart service:  ${YELLOW}systemctl restart whitedns-bot${NC}"
   echo -e "  Service status:   ${YELLOW}systemctl status whitedns-bot${NC}"

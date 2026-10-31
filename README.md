@@ -13,7 +13,7 @@
 
 ---
 
-## ⚡ دستور نصب یک‌خطی (One-Line Installer)
+## ⚡ ۱. دستور نصب یک‌خطی (One-Line Installer)
 
 برای نصب و فعال‌سازی کامل ربات روی سرور لینوکس، کافیست با دسترسی `root` دستور زیر را در ترمینال اجرا کنید:
 
@@ -21,17 +21,33 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/deploy.sh)
 ```
 
-یا اگر می‌خواهید توکن ربات را مستقیماً در همان دستور پاس دهید:
+یا همراه با پاس‌دادن مستقیم توکن ربات:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/deploy.sh) YOUR_BOT_TOKEN
 ```
 
-این دستور به صورت کاملاً خودکار:
-- پیش‌نیازها و Node.js نسخه 20 LTS را نصب می‌کند.
-- پروژه را از گیت‌هاب کلون می‌کند.
-- پکیج‌های مورد نیاز را نصب می‌کند.
-- سرویس `whitedns-bot.service` را در `systemd` ایجاد و راه‌اندازی می‌کند تا ربات به صورت دائمی در پس‌زمینه اجرا بماند.
+---
+
+## 🔄 ۲. دستور به‌روزرسانی یک‌خطی (One-Line Updater)
+
+جهت دریافت آخرین آپدیت‌ها از گیت‌هاب و راه‌اندازی مجدد خودکار سرویس ربات:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/update.sh)
+```
+*(یا ارسال دستور `/update` مستقیماً داخل چت تلگرام ربات)*
+
+---
+
+## 🗑 ۳. دستور لغو نصب و حذف کامل یک‌خطی (One-Line Uninstaller)
+
+برای متوقف‌سازی و حذف کامل ربات و سرویس پس‌زمینه آن از روی سرور لینوکس:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/uninstall.sh)
+```
+*(یا ارسال دستور `/uninstall` درون چت تلگرام جهت حذف پنل تانل از سرور مقصد یا پاک‌سازی خود ربات)*
 
 ---
 
@@ -56,11 +72,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-
 
 ---
 
-## 📱 نحوه استفاده در تلگرام
+## 📱 دستورات منوی تلگرام
 
-۱. وارد ربات تلگرام خود شوید و دستور `/start` را بفرستید.
-۲. ایمیل کلودفلر و سپس کد Global API Key یا API Token را ارسال کنید.
-۳. دامنه مورد نظر خود را از لیست کلیک کنید.
-۴. مشخصات سرور لینوکس مقصد را بفرستید (`IP:Port:User:Password` یا گام به گام).
-۵. دکمه «تایید و شروع نصب خودکار (SSH)» را بزنید.
-۶. ربات مراحل نصب را به صورت زنده نمایش داده و در انتها لینک ورود اختصاصی با پسوند امنیتی را به همراه نام کاربری و رمز پنل در اختیارتان قرار می‌دهد.
+• `/start` - شروع فرآیند نصب پنل و تانل WhiteDNS  
+• `/status` - مشاهده سرورها، پنل‌های فعال و وضعیت  
+• `/update` - بررسی و آپدیت خودکار ربات به آخرین نسخه گیت‌هاب  
+• `/uninstall` - حذف کامل پنل از روی سرور یا راهنمای لغو نصب ربات  
+• `/help` - راهنمای جامع و پیش‌نیازها  
+• `/reset` - لغو عملیات جاری و ریست نشست  

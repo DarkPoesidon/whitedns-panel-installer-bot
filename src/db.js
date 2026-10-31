@@ -131,3 +131,11 @@ export function addDeployment({ chatId, domain, vpsIp, panelUrl, status = 'COMPL
 export function listDeployments(chatId) {
   return db.prepare('SELECT * FROM deployments WHERE chat_id = ? ORDER BY id DESC').all(chatId);
 }
+
+export function removeDeployment(id) {
+  db.prepare('DELETE FROM deployments WHERE id = ?').run(id);
+}
+
+export function deleteDeploymentByIp(chatId, vpsIp) {
+  db.prepare('DELETE FROM deployments WHERE chat_id = ? AND vps_ip = ?').run(chatId, vpsIp);
+}

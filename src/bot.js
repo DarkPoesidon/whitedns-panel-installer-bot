@@ -1,9 +1,13 @@
 import { Telegraf, Markup } from 'telegraf';
+import { exec } from 'child_process';
+import util from 'util';
 import { BOT_TOKEN, CF_TEMPLATE_URL } from './config.js';
-import { getSession, saveSession, resetSession, addDeployment, listDeployments } from './db.js';
-import { verifyToken, listZones, setupSoarDnsRecords } from './cloudflare.js';
-import { installOverSSH } from './ssh-installer.js';
+import { getSession, saveSession, resetSession, addDeployment, listDeployments, deleteDeploymentByIp } from './db.js';
+import { verifyToken, listZones, setupSoarDnsRecords, deleteSoarDnsRecords } from './cloudflare.js';
+import { installOverSSH, uninstallOverSSH } from './ssh-installer.js';
 import { generateStrongPassword, renderProgressBox, renderCompletionCard, renderErrorCard } from './ui.js';
+
+const execPromise = util.promisify(exec);
 
 if (!BOT_TOKEN) {
   console.error('❌ FATAL: BOT_TOKEN is missing! Please provide BOT_TOKEN in .env file.');
@@ -20,6 +24,8 @@ async function registerCommands() {
     await bot.telegram.setMyCommands([
       { command: 'start', description: '🚀 شروع و نصب پنل WhiteDNS' },
       { command: 'status', description: '📊 مشاهده سرورها و پنل‌های فعال' },
+      { command: 'update', description: '🔄 به‌روزرسانی ربات به آخرین نسخه' },
+      { command: 'uninstall', description: '🗑 حذف پنل یا لغو نصب ربات' },
       { command: 'help', description: '❓ راهنمای استفاده و پیش‌نیازها' },
       { command: 'reset', description: '🔄 لغو و شروع مجدد' }
     ]);
@@ -79,7 +85,63 @@ bot.command('status', async (ctx) => {
   return ctx.replyWithMarkdown(
     text,
     Markup.inlineKeyboard([
-      [Markup.button.callback('🚀 نصب سرور جدید', 'cmd:start')]
+      [Markup.button.callback('🚀 نصب سرور جدید', 'cmd:start')],
+      [Markup.button.callback('🗑 حذف یا پاک‌سازی سرور', 'menu:uninstall_soar')]
+    ])
+  );
+});
+
+bot.command('update', async (ctx) => {
+  const statusMsg = await ctx.replyWithMarkdown('⏳ **در حال بررسی مخزن گیت‌هاب جهت دریافت آخرین نسخه...**');
+
+  try {
+    await execPromise('git fetch origin main 2>&1');
+    const { stdout: statusOut } = await execPromise('git status -uno 2>&1');
+
+    if (statusOut.includes('Your branch is up to date') && !statusOut.includes('behind')) {
+      return ctx.telegram.editMessageText(
+        ctx.chat.id,
+        statusMsg.message_id,
+        undefined,
+        '✅ **ربات شما هم‌اکنون به آخرین نسخه رسمی گیت‌هاب مجهز است.**\n\nهیچ آپدیت جدیدی در مخزن موجود نیست.',
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    await ctx.telegram.editMessageText(
+      ctx.chat.id,
+      statusMsg.message_id,
+      undefined,
+      '🔄 **نسخه جدید یافت شد!**\nدر حال دریافت آخرین تغییرات و به‌روزرسانی پکیج‌ها...\n_(ربات تا لحظاتی دیگر به‌طور خودکار ریستارت می‌شود)_',
+      { parse_mode: 'Markdown' }
+    );
+
+    setTimeout(async () => {
+      try {
+        await execPromise('git reset --hard origin/main && npm install --omit=dev && systemctl restart whitedns-bot');
+      } catch (e) {
+        console.error('Update restart error:', e);
+      }
+    }, 1000);
+
+  } catch (err) {
+    return ctx.telegram.editMessageText(
+      ctx.chat.id,
+      statusMsg.message_id,
+      undefined,
+      `❌ **خطا در فرآیند به‌روزرسانی خودکار:**\n\`${err.message}\`\n\nمی‌توانید در ترمینال سرور این دستور را اجرا فرمایید:\n\`bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/update.sh)\``,
+      { parse_mode: 'Markdown' }
+    );
+  }
+});
+
+bot.command('uninstall', async (ctx) => {
+  return ctx.replyWithMarkdown(
+    `🗑 **مدیریت حذف و لغو نصب (Uninstall)**\n\nلطفاً انتخاب فرمایید کدام بخش را می‌خواهید حذف کنید:\n\n۱. **حذف پنل WhiteDNS از روی سرور مقصد:** پاک‌سازی کامل باینری‌ها، سرویس‌های daemon، و تنظیمات DNS از سرور تانل شما.\n۲. **حذف کامل خود این ربات از سرور لینوکس:** متوقف‌سازی سرویس systemd و پاک‌سازی کامل فایل‌های این ربات از سرور میزبان.`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('🗑 حذف پنل WhiteDNS از سرور مقصد', 'menu:uninstall_soar')],
+      [Markup.button.callback('🛑 حذف خود این ربات از سرور لینوکس', 'menu:uninstall_bot')],
+      [Markup.button.callback('❌ انصراف', 'cancel')]
     ])
   );
 });
@@ -283,6 +345,81 @@ bot.on('text', async (ctx) => {
       ])
     );
   }
+
+  // 7. AWAITING UNINSTALL MANUAL IP
+  if (session.step === 'AWAITING_UNINSTALL_IP') {
+    const ip = text.replace(/[^0-9.]/g, '');
+    if (!ip || ip.split('.').length !== 4) {
+      return ctx.replyWithMarkdown('❌ لطفاً یک آدرس IPv4 معتبر ارسال فرمایید:');
+    }
+
+    saveSession(chatId, { uninstIp: ip, step: 'AWAITING_UNINSTALL_PASS' });
+    return ctx.replyWithMarkdown(
+      `🌐 سرور انتخابی: \`${ip}\`\n\n🔑 لطفاً **رمز عبور root سرور** را جهت اتصال SSH و پاک‌سازی کامل WhiteDNS ارسال فرمایید:\n_(پیام رمز عبور شما بلافاصله پس از دریافت حذف می‌شود)_`,
+      Markup.inlineKeyboard([[Markup.button.callback('❌ انصراف', 'cancel')]])
+    );
+  }
+
+  // 8. AWAITING UNINSTALL ROOT PASSWORD
+  if (session.step === 'AWAITING_UNINSTALL_PASS') {
+    await ctx.deleteMessage().catch(() => {});
+    const vpsPass = text;
+    const vpsIp = session.uninstIp || session.vpsIp;
+    const domain = session.uninstDomain || session.domain;
+
+    const progressMsg = await ctx.replyWithMarkdown(
+      `⏳ **در حال اتصال امن SSH به سرور (\`${vpsIp}\`) جهت توقف و پاک‌سازی WhiteDNS...**`
+    );
+
+    try {
+      await uninstallOverSSH({
+        vpsIp,
+        vpsPort: session.vpsPort || 22,
+        vpsUser: 'root',
+        vpsPass,
+        onProgress: async (step, msg) => {
+          await ctx.telegram.editMessageText(
+            chatId,
+            progressMsg.message_id,
+            undefined,
+            `⚙️ **در حال حذف WhiteDNS از روی سرور...**\n\n[🔄] مرحله ${step}: ${msg}`,
+            { parse_mode: 'Markdown' }
+          ).catch(() => {});
+        }
+      });
+
+      // Also clean up Cloudflare DNS records if token exists
+      if (session.cfToken && session.zoneId && domain) {
+        await deleteSoarDnsRecords(session.cfToken, session.zoneId, domain).catch(() => {});
+      }
+
+      deleteDeploymentByIp(chatId, vpsIp);
+      resetSession(chatId, 'IDLE');
+
+      return ctx.telegram.editMessageText(
+        chatId,
+        progressMsg.message_id,
+        undefined,
+        `🎉 **پنل WhiteDNS با موفقیت به طور کامل از روی سرور حذف شد!**\n\n• آی‌پی سرور: \`${vpsIp}\`\n• سرویس‌های \`soar-panel\` و \`soar-panel-ops\` متوقف و حذف شدند.\n• فایل‌های پایگاه‌داده و باینری‌ها پاک شدند.\n• تنظیمات پورت ۵۳ و فایروال به حالت اولیه بازگشتند.\n\nسرور شما اکنون کاملاً پاک و آماده استفاده مجدد است.`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🚀 نصب مجدد یا جدید', callback_data: 'cmd:start' }]
+            ]
+          }
+        }
+      );
+    } catch (err) {
+      return ctx.telegram.editMessageText(
+        chatId,
+        progressMsg.message_id,
+        undefined,
+        `❌ **خطا در فرآیند حذف از سرور:**\n\`${err.message}\`\n\nلطفاً از صحت رمز عبور root و در دسترس بودن سرور اطمینان حاصل نمایید.`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+  }
 });
 
 // ----------------------------------------------------------------------------
@@ -310,6 +447,93 @@ bot.action('cancel', (ctx) => {
     '❌ **عملیات جاری لغو شد.**\n\nبرای شروع دوباره می‌توانید از دکمه زیر استفاده کنید:',
     Markup.inlineKeyboard([
       [Markup.button.callback('🚀 شروع مجدد', 'cmd:start')]
+    ])
+  );
+});
+
+bot.action('menu:uninstall', (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  return ctx.editMessageText(
+    `🗑 **مدیریت حذف و لغو نصب (Uninstall)**\n\nلطفاً انتخاب فرمایید کدام بخش را می‌خواهید حذف کنید:\n\n۱. **حذف پنل WhiteDNS از روی سرور مقصد:** پاک‌سازی کامل باینری‌ها، سرویس‌های daemon، و تنظیمات DNS از سرور تانل شما.\n۲. **حذف کامل خود این ربات از سرور لینوکس:** متوقف‌سازی سرویس systemd و پاک‌سازی کامل این ربات از سرور میزبان.`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('🗑 حذف پنل WhiteDNS از سرور مقصد', 'menu:uninstall_soar')],
+      [Markup.button.callback('🛑 حذف خود این ربات از سرور لینوکس', 'menu:uninstall_bot')],
+      [Markup.button.callback('❌ انصراف', 'cancel')]
+    ])
+  );
+});
+
+bot.action('menu:uninstall_bot', (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  return ctx.editMessageText(
+    `🛑 **راهنمای حذف کامل ربات از سرور لینوکس:**\n\nجهت متوقف‌سازی، حذف سرویس پایدار systemd و پاک‌سازی کامل این ربات از روی سرور میزبان، کافیست دستور زیر را با دسترسی root در ترمینال سرور اجرا فرمایید:\n\n\`bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/uninstall.sh)\`\n\nیا در پوشه پروژه:\n\`cd /opt/whitedns-bot && bash uninstall.sh\`\n\nاین دستور بدون باقی‌گذاشتن هیچ ردپایی، تمام فایل‌ها و سرویس‌های ربات را پاک می‌کند.`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🔙 بازگشت', callback_data: 'menu:uninstall' }]
+        ]
+      }
+    }
+  );
+});
+
+bot.action('menu:uninstall_soar', (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  const list = listDeployments(chatId);
+
+  if (!list || list.length === 0) {
+    saveSession(chatId, { step: 'AWAITING_UNINSTALL_IP' });
+    return ctx.editMessageText(
+      `🗑 **حذف پنل WhiteDNS از روی سرور**\n\nهیچ سرور ثبت‌شده‌ای در تاریخچه شما یافت نشد.\n\n📌 لطفاً **آی‌پی سرور (IPv4)** که می‌خواهید پنل از روی آن حذف شود را ارسال فرمایید:`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback('🔙 بازگشت', 'menu:uninstall')],
+        [Markup.button.callback('❌ انصراف', 'cancel')]
+      ])
+    );
+  }
+
+  const keyboard = list.map(d => ([
+    Markup.button.callback(`🗑 حذف ${d.domain} (${d.vps_ip})`, `uninst_srv:${d.domain}:${d.vps_ip}`)
+  ]));
+
+  keyboard.push([
+    Markup.button.callback('✏️ ورود دستی آی‌پی سرور دیگر', 'uninst_manual'),
+    Markup.button.callback('🔙 بازگشت', 'menu:uninstall')
+  ]);
+
+  return ctx.editMessageText(
+    `👇 **سروری که می‌خواهید پنل WhiteDNS از روی آن حذف شود را انتخاب کنید:**`,
+    Markup.inlineKeyboard(keyboard)
+  );
+});
+
+bot.action('uninst_manual', (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  saveSession(chatId, { step: 'AWAITING_UNINSTALL_IP' });
+  return ctx.editMessageText(
+    `📌 لطفاً **آی‌پی سرور (IPv4)** که می‌خواهید پنل WhiteDNS از روی آن پاک شود را ارسال فرمایید:\n_(مثال: \`194.26.11.20\`)_`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('🔙 بازگشت', 'menu:uninstall_soar')],
+      [Markup.button.callback('❌ انصراف', 'cancel')]
+    ])
+  );
+});
+
+bot.action(/uninst_srv:(.+):(.+)/, (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  const domain = ctx.match[1];
+  const ip = ctx.match[2];
+
+  saveSession(chatId, { uninstDomain: domain, uninstIp: ip, step: 'AWAITING_UNINSTALL_PASS' });
+
+  return ctx.editMessageText(
+    `⚠️ **هشدار حذف کامل پنل:**\n• دامنه: \`${domain}\`\n• آی‌پی سرور: \`${ip}\`\n\nبا این عملیات تمام باینری‌های WhiteDNS، دیتابیس کاربران و سرویس‌های مربوطه از سرور پاک خواهند شد.\n\n🔑 لطفاً **رمز عبور root سرور** را ارسال نمایید تا ربات فرآیند حذف را شروع کند:\n_(پیام رمز عبور شما فوراً حذف خواهد شد)_`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('🔙 انصراف و بازگشت', 'menu:uninstall_soar')]
     ])
   );
 });

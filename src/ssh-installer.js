@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const installerScriptPath = path.resolve(__dirname, '../scripts/install-soar.sh');
+const uninstallerScriptPath = path.resolve(__dirname, '../scripts/uninstall-soar.sh');
 
 /**
  * Executes the WhiteDNS Soar Server headless installation directly on remote VPS via SSH
@@ -170,6 +171,98 @@ export async function installOverSSH({
     });
 
     // Initiate connection
+    conn.connect({
+      host: vpsIp,
+      port: Number(vpsPort),
+      username: vpsUser,
+      password: vpsPass,
+      readyTimeout: 20000,
+      keepaliveInterval: 5000
+    });
+  });
+}
+
+/**
+ * Executes WhiteDNS complete uninstallation on remote VPS via SSH
+ */
+export async function uninstallOverSSH({
+  vpsIp,
+  vpsPort = 22,
+  vpsUser = 'root',
+  vpsPass,
+  onProgress
+}) {
+  const scriptContent = fs.readFileSync(uninstallerScriptPath, 'utf8');
+
+  return new Promise((resolve, reject) => {
+    const conn = new Client();
+    let fullOutput = '';
+    let isFinished = false;
+
+    conn.on('ready', () => {
+      if (onProgress) {
+        onProgress(1, 'اتصال SSH برقرار شد. در حال توقف سرویس‌ها و حذف سرویس‌های daemon...');
+      }
+
+      conn.exec('bash -s', (err, stream) => {
+        if (err) {
+          conn.end();
+          return reject(new Error(`خطا در اجرای اسکریپت حذف: ${err.message}`));
+        }
+
+        stream.write(scriptContent);
+        stream.end();
+
+        let progressBuffer = '';
+
+        stream.on('data', (data) => {
+          const chunk = data.toString('utf8');
+          fullOutput += chunk;
+          progressBuffer += chunk;
+
+          const lines = progressBuffer.split('\n');
+          progressBuffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const match = line.match(/\[PROGRESS\] Step ([0-9]+|COMPLETED) \(([^)]+)\): (.+)/);
+            if (match && onProgress) {
+              const stepNum = match[1] === 'COMPLETED' ? 5 : parseInt(match[1], 10);
+              onProgress(stepNum, match[3]);
+            }
+          }
+        });
+
+        stream.stderr.on('data', (data) => {
+          fullOutput += data.toString('utf8');
+        });
+
+        stream.on('close', (code) => {
+          isFinished = true;
+          conn.end();
+
+          if (code !== 0) {
+            const errorMatch = fullOutput.match(/\[FATAL ERROR\] (.+)/);
+            const errorMsg = errorMatch ? errorMatch[1] : `اسکریپت حذف با کد خطا ${code} به پایان رسید.`;
+            return reject(new Error(errorMsg));
+          }
+
+          resolve({
+            success: true,
+            message: 'سرویس‌ها، فایل‌های پیکربندی و باینری‌های WhiteDNS با موفقیت حذف شدند.'
+          });
+        });
+      });
+    });
+
+    conn.on('error', (err) => {
+      if (!isFinished) {
+        if (err.level === 'client-authentication') {
+          return reject(new Error('رمز عبور SSH اشتباه است یا دسترسی root مجاز نیست.'));
+        }
+        return reject(new Error(`خطای اتصال SSH: ${err.message}`));
+      }
+    });
+
     conn.connect({
       host: vpsIp,
       port: Number(vpsPort),

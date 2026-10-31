@@ -184,3 +184,39 @@ export async function setupSoarDnsRecords(authInput, zoneId, domain, vpsIp) {
     }
   };
 }
+
+/**
+ * Deletes the triple DNS configuration for WhiteDNS from Cloudflare
+ */
+export async function deleteSoarDnsRecords(authInput, zoneId, domain) {
+  const cleanDomain = domain.toLowerCase().trim();
+  const targets = [
+    { type: 'A', name: `ns-soar.${cleanDomain}` },
+    { type: 'NS', name: `soar.${cleanDomain}` },
+    { type: 'A', name: `panel.${cleanDomain}` }
+  ];
+
+  const headers = getAuthHeaders(authInput);
+  let deletedCount = 0;
+
+  for (const t of targets) {
+    try {
+      const searchUrl = `${CF_API_BASE}/zones/${zoneId}/dns_records?type=${t.type}&name=${encodeURIComponent(t.name)}`;
+      const searchRes = await fetch(searchUrl, { headers });
+      const searchData = await searchRes.json();
+      if (searchData.result?.length) {
+        for (const r of searchData.result) {
+          await fetch(`${CF_API_BASE}/zones/${zoneId}/dns_records/${r.id}`, {
+            method: 'DELETE',
+            headers
+          });
+          deletedCount++;
+        }
+      }
+    } catch (e) {
+      // Ignore individual record deletion failure
+    }
+  }
+
+  return { ok: true, deletedCount };
+}

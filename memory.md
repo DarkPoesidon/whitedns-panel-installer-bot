@@ -64,4 +64,16 @@
   bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/deploy.sh) YOUR_BOT_TOKEN
   ```
 
-این دستور به صورت ۱۰۰٪ خودکار پیش‌نیازها و Node.js 20 را نصب کرده، آخرین کد را کلون کرده، وابستگی‌ها را نصب و سرویس `whitedns-bot.service` را در `systemd` فعال می‌کند.
+* **دستور ۱-خطی به‌روزرسانی ربات (Update):**
+  ```bash
+  bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/update.sh)
+  ```
+  یا ارسال فرمان `/update` در چت تلگرام.
+
+* **دستور ۱-خطی لغو نصب و حذف کامل ربات (Uninstall):**
+  ```bash
+  bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/uninstall.sh)
+  ```
+  یا ارسال فرمان `/uninstall` در چت تلگرام جهت پاک‌سازی پنل از سرور مقصد یا حذف ربات.
+
+این دستورات به صورت ۱۰۰٪ خودکار و تمیز مدیریت چرخه حیات ربات و پنل را انجام می‌دهند.

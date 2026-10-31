@@ -27,6 +27,23 @@ fi
 INSTALL_DIR="/opt/whitedns-bot"
 REPO_URL="https://github.com/DarkPoesidon/whitedns-panel-installer-bot.git"
 
+# Handle CLI flags
+if [[ "${1:-}" == "--update" || "${1:-}" == "update" ]]; then
+  if [[ -f "$INSTALL_DIR/update.sh" ]]; then
+    exec bash "$INSTALL_DIR/update.sh"
+  else
+    exec bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/update.sh)
+  fi
+fi
+
+if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" ]]; then
+  if [[ -f "$INSTALL_DIR/uninstall.sh" ]]; then
+    exec bash "$INSTALL_DIR/uninstall.sh" "${2:-}"
+  else
+    exec bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/uninstall.sh) "${2:-}"
+  fi
+fi
+
 # 1. Install prerequisites (curl, git, build-essential)
 echo -e "${BLUE}[1/5] Checking and installing system packages (curl, git, build-essential)...${NC}"
 apt-get update -y

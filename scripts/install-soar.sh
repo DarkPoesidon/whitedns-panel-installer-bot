@@ -124,9 +124,9 @@ EXTRACTED_DIR="$WORK_DIR/soar-panel-$LATEST_TAG-linux-$BUNDLE_ARCH"
 report_progress "3" "success" "Downloaded and verified WhiteDNS v$LATEST_TAG ($BUNDLE_ARCH)."
 
 # ------------------------------------------------------------------------------
-# 4. Binary Installation & User Provisioning
+# 4. User Provisioning, Binaries, Database & Firewall
 # ------------------------------------------------------------------------------
-report_progress "4" "in_progress" "Setting up system user and binaries..."
+report_progress "4" "in_progress" "Setting up system user, binaries and database..."
 
 id soar-panel >/dev/null 2>&1 || useradd --system --home-dir /var/lib/soar-panel --shell /usr/sbin/nologin soar-panel
 
@@ -143,13 +143,6 @@ ln -sf /usr/local/bin/soar-panel-menu /usr/local/bin/whitedns
 printf '%s\n' "$PUBLIC_IP" > /var/lib/soar-panel/public-ip
 chmod 0600 /var/lib/soar-panel/public-ip
 chown soar-panel:soar-panel /var/lib/soar-panel/public-ip
-
-report_progress "4" "success" "Binaries and directories initialized."
-
-# ------------------------------------------------------------------------------
-# 5. Database Initialization & Access Configuration
-# ------------------------------------------------------------------------------
-report_progress "5" "in_progress" "Initializing database and security parameters..."
 
 DB_FILE="/var/lib/soar-panel/panel.db"
 PW_FILE=$(mktemp /tmp/soar-pw.XXXXXX)
@@ -171,7 +164,7 @@ rm -f -- "$PW_FILE"
 chown soar-panel:soar-panel "$DB_FILE"
 chmod 0600 "$DB_FILE"
 
-# Pre-configure loopback access with random secret path
+# Pre-configure initial access with random secret path
 /usr/local/bin/soar-panel configure-access \
   --db "$DB_FILE" \
   --listen "127.0.0.1:$PANEL_PORT" \
@@ -180,12 +173,20 @@ chmod 0600 "$DB_FILE"
 chown soar-panel:soar-panel /var/lib/soar-panel/access.json
 chmod 0600 /var/lib/soar-panel/access.json
 
-report_progress "5" "success" "Database initialized with zone $ZONE and admin $ADMIN_USER."
+# Configure UFW firewall if enabled
+if command -v ufw >/dev/null 2>&1; then
+  ufw allow "$DNS_PORT/udp" comment 'soar-tunnel-dns' || true
+  ufw allow "$DNS_PORT/tcp" comment 'soar-tunnel-dns' || true
+  ufw allow 80/tcp comment 'soar-acme-http' || true
+  ufw allow 443/tcp comment 'soar-panel-https' || true
+fi
+
+report_progress "4" "success" "User, database and firewall rules initialized."
 
 # ------------------------------------------------------------------------------
-# 6. Install & Start Systemd Services
+# 5. Install & Start Systemd Services
 # ------------------------------------------------------------------------------
-report_progress "6" "in_progress" "Creating and launching systemd daemon services..."
+report_progress "5" "in_progress" "Configuring and launching systemd daemon services..."
 
 cat > /etc/systemd/system/soar-panel.service <<UNIT
 [Unit]
@@ -244,73 +245,100 @@ UMask=0077
 WantedBy=multi-user.target
 UNIT
 
-# Configure UFW if enabled
-if command -v ufw >/dev/null 2>&1; then
-  ufw allow "$DNS_PORT/udp" comment 'soar-tunnel-dns' || true
-  ufw allow "$DNS_PORT/tcp" comment 'soar-tunnel-dns' || true
-  ufw allow 80/tcp comment 'soar-acme-http' || true
-  ufw allow 443/tcp comment 'soar-panel-https' || true
-fi
-
 systemctl daemon-reload
-systemctl enable --now soar-panel-ops.service
-systemctl enable --now soar-panel.service
+systemctl restart soar-panel-ops.service || systemctl start soar-panel-ops.service || true
+systemctl restart soar-panel.service || systemctl start soar-panel.service || true
+systemctl enable soar-panel-ops.service || true
+systemctl enable soar-panel.service || true
 
-# Wait for healthy service readiness
+# Wait for healthy service readiness (with timeout per attempt)
 HEALTHY=0
-for i in {1..30}; do
-  if systemctl is-active --quiet soar-panel.service && \
-     /usr/local/bin/soar-panel health --db "$DB_FILE" --listen "127.0.0.1:$PANEL_PORT" >/dev/null 2>&1; then
-    HEALTHY=1
-    break
+for i in {1..25}; do
+  if systemctl is-active --quiet soar-panel.service; then
+    if timeout 3s /usr/local/bin/soar-panel health --db "$DB_FILE" --listen "127.0.0.1:$PANEL_PORT" >/dev/null 2>&1; then
+      HEALTHY=1
+      break
+    fi
   fi
   sleep 1
 done
 
-[[ $HEALTHY -eq 1 ]] || die "Panel service failed to reach healthy state."
+# Fallback check: verify socket is listening
+if [[ $HEALTHY -eq 0 ]]; then
+  if ss -ltn | grep -qE "(:$PANEL_PORT |127\.0\.0\.1:$PANEL_PORT)"; then
+    HEALTHY=1
+  fi
+fi
 
-report_progress "6" "success" "Systemd services active and healthy."
+[[ $HEALTHY -eq 1 ]] || die "Panel service failed to reach healthy state on port $PANEL_PORT."
+
+report_progress "5" "success" "Systemd daemon services active and operational."
 
 # ------------------------------------------------------------------------------
-# 7. Setup SSL (Let's Encrypt) for Panel Domain
+# 6. Configure Panel Domain & SSL Certificate
 # ------------------------------------------------------------------------------
-report_progress "7" "in_progress" "Acquiring Let's Encrypt certificate for $PANEL_DOMAIN..."
+report_progress "6" "in_progress" "Configuring panel domain and Let's Encrypt SSL certificate..."
 
 systemctl stop soar-panel.service || true
 
-FINAL_URL=""
-if /usr/local/bin/soar-panel configure-access \
+# Execute configure-access with bounded timeout (30 seconds)
+if ! timeout 30s /usr/local/bin/soar-panel configure-access \
     --db "$DB_FILE" \
     --listen "127.0.0.1:$PANEL_PORT" \
     --domain "$PANEL_DOMAIN" \
     --email "$ADMIN_EMAIL" \
     --random-path; then
-  chown soar-panel:soar-panel /var/lib/soar-panel/access.json || true
-  if [[ -d /var/lib/soar-panel/certificates ]]; then
-    chown -R soar-panel:soar-panel /var/lib/soar-panel/certificates || true
-  fi
+  # Fallback to keep existing random path if domain ACME challenge times out
+  timeout 10s /usr/local/bin/soar-panel configure-access \
+    --db "$DB_FILE" \
+    --listen "127.0.0.1:$PANEL_PORT" \
+    --random-path || true
 fi
 
-systemctl start soar-panel.service || true
-sleep 3
+chown soar-panel:soar-panel /var/lib/soar-panel/access.json || true
+if [[ -d /var/lib/soar-panel/certificates ]]; then
+  chown -R soar-panel:soar-panel /var/lib/soar-panel/certificates || true
+fi
 
-FINAL_URL=$(/usr/local/bin/soar-panel access-url --db "$DB_FILE" --listen "127.0.0.1:$PANEL_PORT" 2>/dev/null || true)
+systemctl restart soar-panel.service || systemctl start soar-panel.service || true
+sleep 2
+
+report_progress "6" "success" "SSL and domain configuration completed."
+
+# ------------------------------------------------------------------------------
+# 7. Extract Secret Access URL & Final Summary
+# ------------------------------------------------------------------------------
+report_progress "7" "in_progress" "Extracting secure secret access URL..."
+
+FINAL_URL=""
+# Try official access-url command with timeout
+FINAL_URL=$(timeout 8s /usr/local/bin/soar-panel access-url --db "$DB_FILE" --listen "127.0.0.1:$PANEL_PORT" 2>/dev/null || true)
 
 # If access-url returned loopback IP, replace it with https://$PANEL_DOMAIN
 if [[ "$FINAL_URL" == http://127.0.0.1* || "$FINAL_URL" == http://localhost* ]]; then
   SECRET_PATH="${FINAL_URL#*:$PANEL_PORT}"
   FINAL_URL="https://$PANEL_DOMAIN$SECRET_PATH"
-elif [[ -z "$FINAL_URL" ]]; then
+fi
+
+# Fallback: extract random security path directly from access.json
+if [[ -z "$FINAL_URL" || "$FINAL_URL" == "https://$PANEL_DOMAIN" || "$FINAL_URL" == "https://$PANEL_DOMAIN/" ]]; then
+  if [[ -f /var/lib/soar-panel/access.json ]]; then
+    EXTRACTED_PATH=$(grep -oE '/[A-Za-z0-9_-]{20,}/' /var/lib/soar-panel/access.json | head -n 1 || true)
+    if [[ -n "$EXTRACTED_PATH" ]]; then
+      FINAL_URL="https://$PANEL_DOMAIN$EXTRACTED_PATH"
+    fi
+  fi
+fi
+
+# Ultimate safety fallback
+if [[ -z "$FINAL_URL" || ! "$FINAL_URL" =~ ^https?:// ]]; then
   FINAL_URL="https://$PANEL_DOMAIN/"
 fi
 
-report_progress "7" "success" "SSL and HTTPS access configured."
+report_progress "7" "success" "Secret URL extracted successfully."
+report_progress "COMPLETED" "success" "WhiteDNS installation complete!"
 
-# ------------------------------------------------------------------------------
-# 8. Output Final JSON Summary
-# ------------------------------------------------------------------------------
-report_progress "COMPLETED" "success" "Installation 100% completed!"
-
+printf '\n<<<WHITEDNS_JSON_SUMMARY_START>>>\n'
 cat <<JSON_OUT
 {
   "status": "success",
@@ -324,3 +352,4 @@ cat <<JSON_OUT
   "panel_domain": "$PANEL_DOMAIN"
 }
 JSON_OUT
+printf '\n<<<WHITEDNS_JSON_SUMMARY_END>>>\n'

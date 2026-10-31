@@ -718,12 +718,14 @@ bot.action('deploy', async (ctx) => {
       chatId,
       progressMsg.message_id,
       undefined,
-      renderProgressBox(1, 6, domain, vpsIp, 'رکوردهای DNS با موفقیت ثبت شدند. در حال اتصال SSH به سرور...'),
+      renderProgressBox(1, 7, domain, vpsIp, 'رکوردهای DNS در کلادفلر ثبت شدند. در حال اتصال SSH به سرور...'),
       { parse_mode: 'Markdown' }
     );
 
-    // Step 2-6: Real SSH Execution
+    // Step 1-7: Real SSH Execution
     let lastRenderedStep = 1;
+    let lastRenderedMsg = '';
+    let lastEditTime = Date.now();
 
     const result = await installOverSSH({
       vpsIp,
@@ -734,13 +736,21 @@ bot.action('deploy', async (ctx) => {
       adminUser: 'admin',
       adminPass,
       onProgress: async (step, msg) => {
-        if (step !== lastRenderedStep && step <= 6) {
+        const now = Date.now();
+        const stepChanged = step !== lastRenderedStep;
+        const msgChanged = msg && msg !== lastRenderedMsg;
+
+        // Render immediately on step change, or update message if 1.5s passed
+        if (stepChanged || (msgChanged && now - lastEditTime >= 1500)) {
           lastRenderedStep = step;
+          lastRenderedMsg = msg;
+          lastEditTime = now;
+          const displayStep = Math.min(Math.max(step, 1), 7);
           await ctx.telegram.editMessageText(
             chatId,
             progressMsg.message_id,
             undefined,
-            renderProgressBox(step, 6, domain, vpsIp, msg),
+            renderProgressBox(displayStep, 7, domain, vpsIp, msg),
             { parse_mode: 'Markdown' }
           ).catch(() => {});
         }

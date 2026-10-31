@@ -19,14 +19,15 @@ export function generateStrongPassword(length = 16) {
 /**
  * Visual Progress Box renderer for Telegram chat during real SSH installation
  */
-export function renderProgressBox(currentStep, totalSteps = 6, domain = '', ip = '', statusText = '') {
+export function renderProgressBox(currentStep, totalSteps = 7, domain = '', ip = '', statusText = '') {
   const steps = [
     { num: 1, title: 'اتصال SSH به سرور و حل تداخل پورت ۵۳' },
     { num: 2, title: 'نصب بسته‌های سیستمی و نیازمندی‌ها' },
     { num: 3, title: 'دانلود باینری رسمی WhiteDNS و اعتبارسنجی SHA256' },
     { num: 4, title: 'راه‌اندازی دیتابیس، کاربر سیستمی و فایروال' },
-    { num: 5, title: 'راه‌اندازی سرویس‌های daemon و صدور SSL' },
-    { num: 6, title: 'استخراج آدرس اختصاصی و نهایی پنل' },
+    { num: 5, title: 'پیکربندی و راه‌اندازی سرویس‌های daemon' },
+    { num: 6, title: 'پیکربندی دامنه اختصاصی و گواهی امنیتی SSL' },
+    { num: 7, title: 'استخراج آدرس اختصاصی و نهایی پنل' },
   ];
 
   let text = '⚙️ **در حال نصب خودکار WhiteDNS Soar Server بر روی سرور شما...**\n\n';
@@ -47,7 +48,7 @@ export function renderProgressBox(currentStep, totalSteps = 6, domain = '', ip =
     text += `\n💬 وضعیت لحظه‌ای سرور:\n_${statusText}_\n`;
   }
 
-  text += '\n⚠️ _این فرآیند روی سرور شما اجرا می‌شود و حدود ۶۰ ثانیه زمان می‌برد._';
+  text += '\n⚠️ _این فرآیند روی سرور شما اجرا می‌شود و حدود ۶۰ تا ۹۰ ثانیه زمان می‌برد._';
   return text;
 }
 

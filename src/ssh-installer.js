@@ -34,6 +34,15 @@ export async function installOverSSH({
     let fullOutput = '';
     let isFinished = false;
 
+    // Safety timeout: 4 minutes maximum for the entire SSH installation
+    const overallTimeout = setTimeout(() => {
+      if (!isFinished) {
+        isFinished = true;
+        try { conn.end(); } catch (e) {}
+        reject(new Error('زمان مجاز عملیات نصب بر روی سرور (۴ دقیقه) به پایان رسید. ممکن است سرعت دانلود یا اتصال سرور پایین باشد.'));
+      }
+    }, 240000);
+
     conn.on('ready', () => {
       if (onProgress) {
         onProgress(1, 'اتصال SSH برقرار شد. در حال اعتبارسنجی سیستم‌عامل و آزادسازی پورت ۵۳...');
@@ -44,6 +53,7 @@ export async function installOverSSH({
 
       conn.exec(cmd, (err, stream) => {
         if (err) {
+          clearTimeout(overallTimeout);
           conn.end();
           return reject(new Error(`خطا در اجرای دستور روی سرور: ${err.message}`));
         }
@@ -78,7 +88,9 @@ export async function installOverSSH({
         });
 
         stream.on('close', async (code) => {
+          if (isFinished) return;
           isFinished = true;
+          clearTimeout(overallTimeout);
 
           if (code !== 0) {
             conn.end();
@@ -87,29 +99,44 @@ export async function installOverSSH({
             return reject(new Error(errorMsg));
           }
 
-          // Parse final JSON summary from script output
+          // Parse final JSON summary from script output using robust markers
           let resultJson = null;
           try {
-            const jsonStart = fullOutput.indexOf('{\n  "status":');
-            const jsonEnd = fullOutput.lastIndexOf('}\n');
-            if (jsonStart !== -1 && jsonEnd !== -1) {
-              const rawJson = fullOutput.substring(jsonStart, jsonEnd + 2);
+            const markerStart = '<<<WHITEDNS_JSON_SUMMARY_START>>>';
+            const markerEnd = '<<<WHITEDNS_JSON_SUMMARY_END>>>';
+            const startIdx = fullOutput.indexOf(markerStart);
+            const endIdx = fullOutput.indexOf(markerEnd);
+            if (startIdx !== -1 && endIdx !== -1) {
+              const rawJson = fullOutput.substring(startIdx + markerStart.length, endIdx).trim();
               resultJson = JSON.parse(rawJson);
+            } else {
+              // Regex fallback
+              const jsonMatch = fullOutput.match(/\{\s*"status":\s*"success"[\s\S]*?\}/);
+              if (jsonMatch) {
+                resultJson = JSON.parse(jsonMatch[0]);
+              }
             }
           } catch (e) {
             // Fallback
           }
 
-          // If panel_url wasn't captured, run access-url directly on server
+          // If panel_url wasn't captured, run access-url with a strict 5s timeout
           let panelUrl = resultJson?.panel_url;
           if (!panelUrl || !panelUrl.startsWith('http')) {
             try {
               panelUrl = await new Promise((resUrl) => {
+                const accessTimeout = setTimeout(() => resUrl(''), 5000);
                 conn.exec('/usr/local/bin/soar-panel access-url --db /var/lib/soar-panel/panel.db --listen 127.0.0.1:2053', (err2, stream2) => {
-                  if (err2) return resUrl('');
+                  if (err2) {
+                    clearTimeout(accessTimeout);
+                    return resUrl('');
+                  }
                   let out = '';
                   stream2.on('data', (d) => { out += d.toString('utf8'); });
-                  stream2.on('close', () => { resUrl(out.trim()); });
+                  stream2.on('close', () => {
+                    clearTimeout(accessTimeout);
+                    resUrl(out.trim());
+                  });
                 });
               });
             } catch (e) {

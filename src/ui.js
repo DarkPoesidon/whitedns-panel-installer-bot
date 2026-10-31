@@ -101,3 +101,58 @@ export function renderErrorCard(errorMsg) {
 
 جهت شروع دوباره، دستور /start را ارسال کنید.`;
 }
+
+/**
+ * Repair Progress Box renderer
+ */
+export function renderRepairProgressBox(currentStep, totalSteps = 6, ip = '', statusText = '') {
+  const steps = [
+    { num: 1, title: 'بررسی و رفع مشکل DNS و اینترنت سرور (/etc/resolv.conf)' },
+    { num: 2, title: 'بررسی و آزادسازی پورت ۵۳ (حل تداخل systemd-resolved)' },
+    { num: 3, title: 'بررسی دسترسی‌ها و ریستارت سرویس‌های daemon پنل' },
+    { num: 4, title: 'بررسی فایروال و بازگشایی پورت‌های ۵۳، ۸۰ و ۴۴۳' },
+    { num: 5, title: 'بررسی گواهی SSL و ریورس پروکسی Nginx' },
+    { num: 6, title: 'تست سلامت نهایی و بازیابی آدرس اختصاصی پنل' },
+  ];
+
+  let text = '🛠 **در حال عیب‌یابی و تعمیر خودکار سرور WhiteDNS...**\n\n';
+  if (ip) text += `🖥 آی‌پی سرور: \`${ip}\`\n\n`;
+
+  for (const s of steps) {
+    if (s.num < currentStep) {
+      text += `[✅] مرحله ${s.num}: ${s.title}\n`;
+    } else if (s.num === currentStep) {
+      text += `[🔄] **مرحله ${s.num}: ${s.title}**...\n`;
+    } else {
+      text += `[⏳] مرحله ${s.num}: ${s.title}\n`;
+    }
+  }
+
+  if (statusText) {
+    text += `\n💬 وضعیت لحظه‌ای سرور:\n_${statusText}_\n`;
+  }
+
+  text += '\n⚠️ _این عملیات حدود ۱۵ تا ۳۰ ثانیه زمان می‌برد._';
+  return text;
+}
+
+/**
+ * Repair Card renderer
+ */
+export function renderRepairCard({ panelUrl, ip }) {
+  return `✅ **عیب‌یابی و تعمیر خودکار سرور با موفقیت پایان یافت!**
+
+🖥 **سرور:** \`${ip}\`
+
+🟢 **گزارش سلامت سرویس‌ها:**
+• اینترنت و ریزالو DNS: کاملاً سالم (1.1.1.1 / 8.8.8.8)
+• پورت ۵۳ (تانل Soar DNS): بدون تداخل و فعال
+• فایروال (UFW): پورت‌های ۵۳، ۸۰ و ۴۴۳ باز
+• وب‌سرور Nginx و گواهی SSL: فعال و پیکربندی‌شده
+• هسته مدیریتی Soar Panel: فعال (Active)
+
+🌐 **آدرس بازیابی‌شده و فعال پنل شما:**
+${panelUrl}
+
+💡 در صورت بروز هرگونه قطعی یا عدم باز شدن پنل، همیشه می‌توانید با دستور /repair سرور را مجدداً عیب‌یابی و ریستارت نمایید.`;
+}

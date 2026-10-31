@@ -4,8 +4,8 @@ import util from 'util';
 import { BOT_TOKEN, CF_TEMPLATE_URL } from './config.js';
 import { getSession, saveSession, resetSession, addDeployment, listDeployments, deleteDeploymentByIp } from './db.js';
 import { verifyToken, listZones, setupSoarDnsRecords, deleteSoarDnsRecords } from './cloudflare.js';
-import { installOverSSH, uninstallOverSSH } from './ssh-installer.js';
-import { generateStrongPassword, renderProgressBox, renderCompletionCard, renderErrorCard } from './ui.js';
+import { installOverSSH, uninstallOverSSH, repairOverSSH } from './ssh-installer.js';
+import { generateStrongPassword, renderProgressBox, renderCompletionCard, renderErrorCard, renderRepairProgressBox, renderRepairCard } from './ui.js';
 
 const execPromise = util.promisify(exec);
 
@@ -24,8 +24,9 @@ async function registerCommands() {
     await bot.telegram.setMyCommands([
       { command: 'start', description: '🚀 شروع و نصب پنل WhiteDNS' },
       { command: 'status', description: '📊 مشاهده سرورها و پنل‌های فعال' },
+      { command: 'repair', description: '🛠 عیب‌یابی و تعمیر خودکار سرور' },
       { command: 'update', description: '🔄 به‌روزرسانی ربات به آخرین نسخه' },
-      { command: 'uninstall', description: '🗑 حذف پنل یا لغو نصب ربات' },
+      { command: 'uninstall', description: '🗑 حذف پنل WhiteDNS از سرور' },
       { command: 'help', description: '❓ راهنمای استفاده و پیش‌نیازها' },
       { command: 'reset', description: '🔄 لغو و شروع مجدد' }
     ]);
@@ -46,6 +47,7 @@ bot.command('start', async (ctx) => {
     `👋 **به ربات نصب کاملاً خودکار WhiteDNS Soar Server خوش آمدید.**\n\nاین ربات تمامی مراحل تنظیم کلودفلر، اتصال SSH به سرور، حل تداخل پورت ۵۳، نصب پیش‌نیازها و صدور گواهی SSL را **به صورت ۱۰۰٪ خودکار** انجام می‌دهد.\n\n📧 **مرحله ۱ از ۲: ورود ایمیل کلودفلر**\nلطفاً **آدرس ایمیل** اکانت کلودفلر خود را ارسال فرمایید:\n_(مثال: myname@gmail.com)_\n\n💡 _اگر توکن آماده دارید، می‌توانید آن را مستقیماً ارسال کنید._`,
     Markup.inlineKeyboard([
       [Markup.button.url('🚀 باز کردن فرم آماده توکن (۱-کلیک)', CF_TEMPLATE_URL)],
+      [Markup.button.callback('🛠 عیب‌یابی و تعمیر سرور موجود', 'menu:repair')],
       [Markup.button.callback('❌ انصراف', 'cancel')]
     ])
   );
@@ -53,9 +55,10 @@ bot.command('start', async (ctx) => {
 
 bot.command('help', async (ctx) => {
   return ctx.replyWithMarkdown(
-    `📖 **راهنمای جامع ربات نصب خودکار WhiteDNS**\n\n🔹 **این ربات چه کار می‌کند؟**\nاین ربات مستقیماً از طریق پروتکل امن SSH به سرور شما متصل شده، تانل DNS (Soar و Cotten) را کانفیگ کرده و پنل وب مدیریتی را با آدرس امن فعال می‌کند.\n\n🔹 **پیش‌نیازها:**\n۱. یک سرور خام با سیستم‌عامل Ubuntu 22/24 یا Debian 12/13.\n۲. یک دامنه متصل به اکانت کلودفلر.\n\n🔹 **دستورات منو:**\n• /start - شروع فرآیند نصب\n• /status - مشاهده پنل‌ها و لینک‌های فعال\n• /reset - ریست و لغو مرحله جاری\n• /help - نمایش این راهنما`,
+    `📖 **راهنمای جامع ربات نصب خودکار WhiteDNS**\n\n🔹 **این ربات چه کار می‌کند؟**\nاین ربات مستقیماً از طریق پروتکل امن SSH به سرور شما متصل شده، تانل DNS (Soar و Cotten) را کانفیگ کرده و پنل وب مدیریتی را با آدرس امن فعال می‌کند.\n\n🔹 **پیش‌نیازها:**\n۱. یک سرور خام با سیستم‌عامل Ubuntu 22/24 یا Debian 12/13.\n۲. یک دامنه متصل به اکانت کلودفلر.\n\n🔹 **دستورات منو:**\n• /start - شروع فرآیند نصب پنل جدید\n• /status - مشاهده پنل‌ها و لینک‌های فعال\n• /repair - عیب‌یابی خودکار، حل تداخل پورت ۵۳، صدور مجدد SSL و تعمیر پنل\n• /update - به‌روزرسانی ربات به آخرین نسخه\n• /uninstall - حذف پنل WhiteDNS از سرور\n• /reset - ریست و لغو مرحله جاری`,
     Markup.inlineKeyboard([
-      [Markup.button.callback('🚀 شروع نصب جدید', 'cmd:start')]
+      [Markup.button.callback('🚀 شروع نصب جدید', 'cmd:start')],
+      [Markup.button.callback('🛠 عیب‌یابی و تعمیر سرور', 'menu:repair')]
     ])
   );
 });
@@ -66,9 +69,10 @@ bot.command('status', async (ctx) => {
 
   if (!list || list.length === 0) {
     return ctx.replyWithMarkdown(
-      `📊 **وضعیت سرورها:**\n\nشما هنوز هیچ پنلی راه‌اندازی نکرده‌اید.\nبرای شروع نصب اولین سرور، روی دکمه زیر بزنید:`,
+      `📊 **وضعیت سرورها:**\n\nشما هنوز هیچ پنلی راه‌اندازی نکرده‌اید.\nبرای شروع نصب یا عیب‌یابی، گزینه‌های زیر را انتخاب کنید:`,
       Markup.inlineKeyboard([
-        [Markup.button.callback('🚀 نصب سرور جدید', 'cmd:start')]
+        [Markup.button.callback('🚀 نصب سرور جدید', 'cmd:start')],
+        [Markup.button.callback('🛠 عیب‌یابی و تعمیر سرور دستی', 'menu:repair')]
       ])
     );
   }
@@ -86,9 +90,14 @@ bot.command('status', async (ctx) => {
     text,
     Markup.inlineKeyboard([
       [Markup.button.callback('🚀 نصب سرور جدید', 'cmd:start')],
+      [Markup.button.callback('🛠 عیب‌یابی و تعمیر سرور', 'menu:repair')],
       [Markup.button.callback('🗑 حذف یا پاک‌سازی سرور', 'menu:uninstall_soar')]
     ])
   );
+});
+
+bot.command(['repair', 'fix'], async (ctx) => {
+  return renderRepairList(ctx, ctx.chat.id, false);
 });
 
 bot.command('update', async (ctx) => {
@@ -413,6 +422,95 @@ bot.on('text', async (ctx) => {
       );
     }
   }
+
+  // 9. AWAITING REPAIR MANUAL IP
+  if (session.step === 'AWAITING_REPAIR_IP') {
+    const ip = text.replace(/[^0-9.]/g, '');
+    if (!ip || ip.split('.').length !== 4) {
+      return ctx.replyWithMarkdown('❌ لطفاً یک آدرس IPv4 معتبر ارسال فرمایید:');
+    }
+
+    saveSession(chatId, { repairIp: ip, step: 'AWAITING_REPAIR_PASS' });
+    return ctx.replyWithMarkdown(
+      `🌐 سرور انتخابی جهت عیب‌یابی: \`${ip}\`\n\n🔑 لطفاً **رمز عبور root سرور** را جهت اتصال SSH و عیب‌یابی/تعمیر خودکار ارسال فرمایید:\n_(پیام رمز عبور شما بلافاصله پس از دریافت حذف می‌شود)_`,
+      Markup.inlineKeyboard([[Markup.button.callback('❌ انصراف', 'cancel')]])
+    );
+  }
+
+  // 10. AWAITING REPAIR ROOT PASSWORD
+  if (session.step === 'AWAITING_REPAIR_PASS') {
+    await ctx.deleteMessage().catch(() => {});
+    const vpsPass = text;
+    const vpsIp = session.repairIp || session.vpsIp;
+    const domain = session.repairDomain || session.domain || '';
+
+    const progressMsg = await ctx.replyWithMarkdown(
+      renderRepairProgressBox(1, 6, vpsIp, 'در حال برقراری اتصال امن SSH به سرور...')
+    );
+
+    try {
+      const repairRes = await repairOverSSH({
+        vpsIp,
+        vpsPort: session.vpsPort || 22,
+        vpsUser: 'root',
+        vpsPass,
+        domain,
+        onProgress: async (step, msg) => {
+          await ctx.telegram.editMessageText(
+            chatId,
+            progressMsg.message_id,
+            undefined,
+            renderRepairProgressBox(step, 6, vpsIp, msg),
+            { parse_mode: 'Markdown' }
+          ).catch(() => {});
+        }
+      });
+
+      if (repairRes.panelUrl) {
+        addDeployment({
+          chatId,
+          domain: repairRes.panelDomain || domain || vpsIp,
+          vpsIp,
+          panelUrl: repairRes.panelUrl,
+          status: 'COMPLETED'
+        });
+      }
+
+      resetSession(chatId, 'IDLE');
+
+      return ctx.telegram.editMessageText(
+        chatId,
+        progressMsg.message_id,
+        undefined,
+        renderRepairCard({ panelUrl: repairRes.panelUrl, ip: vpsIp }),
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🌐 باز کردن مستقیم آدرس پنل', url: repairRes.panelUrl }],
+              [{ text: '📊 مشاهده وضعیت سرورها', callback_data: 'menu:status' }]
+            ]
+          }
+        }
+      );
+    } catch (err) {
+      return ctx.telegram.editMessageText(
+        chatId,
+        progressMsg.message_id,
+        undefined,
+        `❌ **عملیات عیب‌یابی و تعمیر متوقف شد:**\n\`${err.message}\`\n\nلطفاً از صحت رمز عبور root و باز بودن پورت ۲۲ سرور اطمینان حاصل نمایید.`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔄 تلاش مجدد', callback_data: 'menu:repair' }],
+              [{ text: '❌ انصراف', callback_data: 'cancel' }]
+            ]
+          }
+        }
+      );
+    }
+  }
 });
 
 // ----------------------------------------------------------------------------
@@ -501,6 +599,96 @@ bot.action(/uninst_srv:(.+):(.+)/, (ctx) => {
     `⚠️ **هشدار حذف کامل پنل:**\n• دامنه: \`${domain}\`\n• آی‌پی سرور: \`${ip}\`\n\nبا این عملیات تمام باینری‌های WhiteDNS، دیتابیس کاربران و سرویس‌های مربوطه از سرور پاک خواهند شد.\n\n🔑 لطفاً **رمز عبور root سرور** را ارسال نمایید تا ربات فرآیند حذف را شروع کند:\n_(پیام رمز عبور شما فوراً حذف خواهد شد)_`,
     Markup.inlineKeyboard([
       [Markup.button.callback('🔙 انصراف و بازگشت', 'menu:uninstall_soar')]
+    ])
+  );
+});
+
+function renderRepairList(ctx, chatId, isEdit = false) {
+  const list = listDeployments(chatId);
+
+  if (!list || list.length === 0) {
+    saveSession(chatId, { step: 'AWAITING_REPAIR_IP' });
+    const msg = `🛠 **عیب‌یابی و تعمیر خودکار سرور WhiteDNS**\n\nهیچ سرور ثبت‌شده‌ای در تاریخچه شما یافت نشد.\n\n📌 لطفاً **آی‌پی سرور (IPv4)** که می‌خواهید عیب‌یابی و تعمیر شود را ارسال فرمایید:\n_(مثال: \`194.26.11.20\`)_`;
+    const buttons = Markup.inlineKeyboard([
+      [Markup.button.callback('❌ انصراف و بازگشت', 'cancel')]
+    ]);
+    if (isEdit) return ctx.editMessageText(msg, buttons);
+    return ctx.replyWithMarkdown(msg, buttons);
+  }
+
+  const keyboard = list.map(d => ([
+    Markup.button.callback(`🛠 عیب‌یابی و تعمیر ${d.domain} (${d.vps_ip})`, `repair_srv:${d.domain}:${d.vps_ip}`)
+  ]));
+
+  keyboard.push([
+    Markup.button.callback('✏️ ورود دستی آی‌پی سرور دیگر', 'repair_manual'),
+    Markup.button.callback('❌ انصراف', 'cancel')
+  ]);
+
+  const msg = `🛠 **سامانه هوشمند عیب‌یابی و خودترمیمی WhiteDNS**\n\nربات به صورت خودکار موارد زیر را روی سرور بررسی و اصلاح می‌کند:\n• رفع قطعی اینترنت و تنظیم DNS خروجی سرور (/etc/resolv.conf)\n• حل تداخل پورت ۵۳ (آزادسازی از دست systemd-resolved)\n• اصلاح دسترسی‌ها و راه‌اندازی مجدد هسته Soar Panel\n• بررسی فایروال و بازگشایی پورت‌های ۵۳، ۸۰ و ۴۴۳\n• صدور مجدد SSL و راه‌اندازی ریورس پروکسی Nginx\n• بازیابی و ارائه آدرس اختصاصی و فعال پنل\n\n👇 لطفاً سرور مورد نظر خود را انتخاب فرمایید:`;
+  if (isEdit) return ctx.editMessageText(msg, Markup.inlineKeyboard(keyboard));
+  return ctx.replyWithMarkdown(msg, Markup.inlineKeyboard(keyboard));
+}
+
+bot.action('menu:repair', (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  return renderRepairList(ctx, ctx.chat.id, true);
+});
+
+bot.action('repair_manual', (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  saveSession(chatId, { step: 'AWAITING_REPAIR_IP' });
+  return ctx.editMessageText(
+    `📌 لطفاً **آی‌پی سرور (IPv4)** که می‌خواهید عیب‌یابی و تعمیر شود را ارسال فرمایید:\n_(مثال: \`194.26.11.20\`)_`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('🔙 بازگشت', 'menu:repair')],
+      [Markup.button.callback('❌ انصراف', 'cancel')]
+    ])
+  );
+});
+
+bot.action(/repair_srv:(.+):(.+)/, (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const chatId = ctx.chat.id;
+  const domain = ctx.match[1];
+  const ip = ctx.match[2];
+
+  saveSession(chatId, { repairDomain: domain, repairIp: ip, step: 'AWAITING_REPAIR_PASS' });
+
+  return ctx.editMessageText(
+    `🛠 **آماده‌سازی عیب‌یابی و خودترمیمی سرور:**\n• دامنه: \`${domain}\`\n• آی‌پی سرور: \`${ip}\`\n\nربات به سرور متصل شده، تداخل‌های پورت ۵۳، سرویس‌های داون، گواهی SSL و وب‌سرور را به‌طور کامل تعمیر خواهد کرد.\n\n🔑 لطفاً **رمز عبور root سرور** را ارسال فرمایید:\n_(پیام رمز عبور شما بلافاصله پس از دریافت حذف خواهد شد)_`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('🔙 انصراف و بازگشت', 'menu:repair')]
+    ])
+  );
+});
+
+bot.action('menu:status', (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const list = listDeployments(ctx.chat.id);
+  if (!list || list.length === 0) {
+    return ctx.editMessageText(
+      `📊 **وضعیت سرورها:**\n\nشما هنوز هیچ پنلی راه‌اندازی نکرده‌اید.`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback('🚀 نصب سرور جدید', 'cmd:start')]
+      ])
+    );
+  }
+  let text = `📊 **لیست سرورهای نصب‌شده شما (${list.length}):**\n\n`;
+  for (const d of list) {
+    text += `• **دامنه:** \`${d.domain}\`\n  **آی‌پی سرور:** \`${d.vps_ip}\`\n  **وضعیت:** 🟢 فعال\n`;
+    if (d.panel_url) {
+      text += `  **آدرس پنل:** ${d.panel_url}\n`;
+    }
+    text += `\n`;
+  }
+  return ctx.editMessageText(
+    text,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('🚀 نصب سرور جدید', 'cmd:start')],
+      [Markup.button.callback('🛠 عیب‌یابی و تعمیر سرور', 'menu:repair')],
+      [Markup.button.callback('🗑 حذف یا پاک‌سازی سرور', 'menu:uninstall_soar')]
     ])
   );
 });

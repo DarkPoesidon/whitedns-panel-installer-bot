@@ -15,12 +15,12 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 echo -e "${CYAN}======================================================"
-echo -e "   🚀 WhiteDNS Autonomous Linux Telegram Bot Deployer"
+echo -e "   WhiteDNS Autonomous Linux Telegram Bot Deployer"
 echo -e "======================================================${NC}"
 
 if [[ $EUID -ne 0 ]]; then
-  echo -e "${RED}❌ این اسکریپت باید با دسترسی root اجرا شود.${NC}"
-  echo -e "دستور ${YELLOW}sudo -i${NC} را اجرا کرده و سپس مجدداً تلاش کنید."
+  echo -e "${RED}[ERROR] This script must be run as root.${NC}"
+  echo -e "Please run ${YELLOW}sudo -i${NC} first, then re-run this command."
   exit 1
 fi
 
@@ -1471,12 +1471,12 @@ else
 fi
 
 if (( NEED_NODE )); then
-  echo -e "${BLUE}📦 در حال نصب Node.js 20 LTS و ابزارهای کامپایل...${NC}"
+  echo -e "${BLUE}[1/4] Installing Node.js 20 LTS and build tools...${NC}"
   apt-get update -y
   apt-get install -y curl build-essential ca-certificates
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
   apt-get install -y nodejs
-  echo -e "${GREEN}✅ Node.js $(node -v) با موفقیت نصب شد.${NC}"
+  echo -e "${GREEN}[OK] Node.js $(node -v) successfully installed.${NC}"
 fi
 
 # 10. Prompt for BOT_TOKEN
@@ -1484,14 +1484,14 @@ ENV_FILE="$INSTALL_DIR/.env"
 BOT_TOKEN="${BOT_TOKEN:-}"
 
 if [[ -z "$BOT_TOKEN" ]]; then
-  echo -e "\n${YELLOW}🔑 ورود توکن ربات تلگرام:${NC}"
-  echo -e "توکن دریافتی از ${CYAN}@BotFather${NC} در تلگرام را وارد کنید:"
+  echo -e "\n${YELLOW}[INPUT] Telegram Bot Token configuration:${NC}"
+  echo -e "Enter the BOT_TOKEN received from ${CYAN}@BotFather${NC}:"
   read -r -p "BOT_TOKEN: " INPUT_TOKEN
   BOT_TOKEN=$(echo "$INPUT_TOKEN" | tr -d ' "')
 fi
 
 if [[ -z "$BOT_TOKEN" || "$BOT_TOKEN" != *:* ]]; then
-  echo -e "${RED}❌ فرمت توکن نامعتبر است (مثال: 123456789:ABCdefGhIjk...)${NC}"
+  echo -e "${RED}[ERROR] Invalid token format. Expected: 123456789:ABCdefGhIjk...${NC}"
   exit 1
 fi
 
@@ -1502,13 +1502,13 @@ EOF
 chmod 600 "$ENV_FILE"
 
 # 11. Run npm install
-echo -e "${BLUE}📦 در حال نصب وابستگی‌های پروژه (npm install)...${NC}"
+echo -e "${BLUE}[2/4] Installing dependencies (npm install)...${NC}"
 cd "$INSTALL_DIR"
 npm install --omit=dev
 
 # 12. Create & start systemd service
 SERVICE_FILE="/etc/systemd/system/whitedns-bot.service"
-echo -e "${BLUE}⚙️ در حال راه‌اندازی سرویس پایدار در پس‌زمینه (systemd)...${NC}"
+echo -e "${BLUE}[3/4] Creating systemd service (whitedns-bot.service)...${NC}"
 
 NODE_BIN=$(command -v node)
 
@@ -1539,16 +1539,17 @@ systemctl enable --now whitedns-bot.service
 sleep 2
 if systemctl is-active --quiet whitedns-bot.service; then
   echo -e "\n${GREEN}======================================================"
-  echo -e "   🎉 ربات WhiteDNS با موفقیت روی سرور مستقر شد!"
+  echo -e "   WhiteDNS Bot successfully installed and active!"
   echo -e "======================================================${NC}"
-  echo -e "🤖 وضعیت سرویس: ${GREEN}Active (Running)${NC}"
-  echo -e "\n📱 اکنون به تلگرام بروید و دستور ${CYAN}/start${NC} را برای ربات خود ارسال فرمایید."
-  echo -e "\n🛠 دستورات کاربردی سرور:"
-  echo -e "• مشاهده لاگ‌های زنده:   ${YELLOW}journalctl -u whitedns-bot -f${NC}"
-  echo -e "• ریستارت ربات:           ${YELLOW}systemctl restart whitedns-bot${NC}"
-  echo -e "• وضعیت سرویس:            ${YELLOW}systemctl status whitedns-bot${NC}"
+  echo -e "Service Status: ${GREEN}Active (Running)${NC}"
+  echo -e "\nNow open Telegram and send ${CYAN}/start${NC} to your bot."
+  echo -e "\nUseful server commands:"
+  echo -e "  View live logs:   ${YELLOW}journalctl -u whitedns-bot -f${NC}"
+  echo -e "  Restart service:  ${YELLOW}systemctl restart whitedns-bot${NC}"
+  echo -e "  Service status:   ${YELLOW}systemctl status whitedns-bot${NC}"
+  echo -e "  Stop service:     ${YELLOW}systemctl stop whitedns-bot${NC}"
 else
-  echo -e "${RED}⚠️ سرویس اجرا نشد. لاگ‌ها را بررسی کنید:${NC}"
+  echo -e "${RED}[ERROR] Service failed to start. Review logs below:${NC}"
   journalctl -u whitedns-bot -n 20 --no-pager
   exit 1
 fi

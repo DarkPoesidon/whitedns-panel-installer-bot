@@ -15,12 +15,12 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 echo -e "${CYAN}======================================================"
-echo -e "   🚀 WhiteDNS Soar Server - Telegram Bot Installer"
+echo -e "   WhiteDNS Soar Server - Telegram Bot Installer"
 echo -e "======================================================${NC}"
 
 if [[ $EUID -ne 0 ]]; then
-  echo -e "${RED}❌ این اسکریپت باید با دسترسی root اجرا شود.${NC}"
-  echo -e "دستور ${YELLOW}sudo -i${NC} را اجرا کرده و سپس مجدداً تلاش کنید."
+  echo -e "${RED}[ERROR] This script must be run as root.${NC}"
+  echo -e "Please run ${YELLOW}sudo -i${NC} first, then re-run this command."
   exit 1
 fi
 
@@ -28,7 +28,7 @@ INSTALL_DIR="/opt/whitedns-bot"
 REPO_URL="https://github.com/DarkPoesidon/whitedns-panel-installer-bot.git"
 
 # 1. Install prerequisites (curl, git, build-essential)
-echo -e "${BLUE}📦 در حال بررسی و نصب پیش‌نیازهای سیستم...${NC}"
+echo -e "${BLUE}[1/5] Checking and installing system packages (curl, git, build-essential)...${NC}"
 apt-get update -y
 apt-get install -y curl git build-essential ca-certificates
 
@@ -44,20 +44,20 @@ else
 fi
 
 if (( NEED_NODE )); then
-  echo -e "${BLUE}📦 در حال نصب Node.js 20 LTS...${NC}"
+  echo -e "${BLUE}[2/5] Installing Node.js 20 LTS from NodeSource...${NC}"
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
   apt-get install -y nodejs
 fi
-echo -e "${GREEN}✅ Node.js $(node -v) آماده است.${NC}"
+echo -e "${GREEN}[OK] Node.js $(node -v) is ready.${NC}"
 
 # 3. Clone or update repository
 if [[ -d "$INSTALL_DIR/.git" ]]; then
-  echo -e "${BLUE}🔄 در حال به‌روزرسانی کد پروژه از گیت‌هاب...${NC}"
+  echo -e "${BLUE}[3/5] Updating repository from GitHub...${NC}"
   cd "$INSTALL_DIR"
   git fetch --all
   git reset --hard origin/main || git reset --hard origin/master
 else
-  echo -e "${BLUE}📥 در حال دانلود پروژه از گیت‌هاب...${NC}"
+  echo -e "${BLUE}[3/5] Cloning repository into $INSTALL_DIR...${NC}"
   rm -rf "$INSTALL_DIR"
   git clone "$REPO_URL" "$INSTALL_DIR"
   cd "$INSTALL_DIR"
@@ -75,14 +75,14 @@ if [[ -z "$BOT_TOKEN" && -f "$ENV_FILE" ]]; then
 fi
 
 if [[ -z "$BOT_TOKEN" ]]; then
-  echo -e "\n${YELLOW}🔑 ورود توکن ربات تلگرام:${NC}"
-  echo -e "توکن دریافتی از ${CYAN}@BotFather${NC} در تلگرام را وارد کنید:"
+  echo -e "\n${YELLOW}[INPUT] Telegram Bot Token configuration:${NC}"
+  echo -e "Enter the BOT_TOKEN received from ${CYAN}@BotFather${NC}:"
   read -r -p "BOT_TOKEN: " INPUT_TOKEN
   BOT_TOKEN=$(echo "$INPUT_TOKEN" | tr -d ' "')
 fi
 
 if [[ -z "$BOT_TOKEN" || "$BOT_TOKEN" != *:* ]]; then
-  echo -e "${RED}❌ فرمت توکن نامعتبر است (مثال: 123456789:ABCdefGhIjk...)${NC}"
+  echo -e "${RED}[ERROR] Invalid token format. Expected: 123456789:ABCdefGhIjk...${NC}"
   exit 1
 fi
 
@@ -91,14 +91,16 @@ BOT_TOKEN=${BOT_TOKEN}
 NODE_ENV=production
 EOF
 chmod 600 "$ENV_FILE"
+echo -e "${GREEN}[OK] Environment file (.env) configured.${NC}"
 
 # 5. Install dependencies
-echo -e "${BLUE}📦 در حال نصب وابستگی‌ها (npm install)...${NC}"
+echo -e "${BLUE}[4/5] Installing npm dependencies (npm install)...${NC}"
 npm install --omit=dev
 
 chmod +x "$INSTALL_DIR/scripts/install-soar.sh"
 
 # 6. Setup and start systemd service
+echo -e "${BLUE}[5/5] Setting up systemd service (whitedns-bot.service)...${NC}"
 SERVICE_FILE="/etc/systemd/system/whitedns-bot.service"
 NODE_BIN=$(command -v node)
 
@@ -129,17 +131,17 @@ systemctl enable --now whitedns-bot.service
 sleep 2
 if systemctl is-active --quiet whitedns-bot.service; then
   echo -e "\n${GREEN}======================================================"
-  echo -e "   🎉 ربات WhiteDNS با موفقیت روی سرور نصب و فعال شد!"
+  echo -e "   WhiteDNS Bot successfully installed and active!"
   echo -e "======================================================${NC}"
-  echo -e "🤖 وضعیت سرویس: ${GREEN}Active (Running)${NC}"
-  echo -e "\n📱 اکنون به تلگرام بروید و دستور ${CYAN}/start${NC} را برای ربات ارسال نمایید."
-  echo -e "\n🛠 دستورات کاربردی مدیریت سرور:"
-  echo -e "• مشاهده لاگ‌های زنده:   ${YELLOW}journalctl -u whitedns-bot -f${NC}"
-  echo -e "• ریستارت ربات:           ${YELLOW}systemctl restart whitedns-bot${NC}"
-  echo -e "• وضعیت سرویس:            ${YELLOW}systemctl status whitedns-bot${NC}"
-  echo -e "• توقف ربات:              ${YELLOW}systemctl stop whitedns-bot${NC}"
+  echo -e "Service Status: ${GREEN}Active (Running)${NC}"
+  echo -e "\nNow open Telegram and send ${CYAN}/start${NC} to your bot."
+  echo -e "\nUseful server commands:"
+  echo -e "  View live logs:   ${YELLOW}journalctl -u whitedns-bot -f${NC}"
+  echo -e "  Restart service:  ${YELLOW}systemctl restart whitedns-bot${NC}"
+  echo -e "  Service status:   ${YELLOW}systemctl status whitedns-bot${NC}"
+  echo -e "  Stop service:     ${YELLOW}systemctl stop whitedns-bot${NC}"
 else
-  echo -e "${RED}⚠️ سرویس اجرا نشد. لاگ‌ها را بررسی کنید:${NC}"
+  echo -e "${RED}[ERROR] Service failed to start. Review logs below:${NC}"
   journalctl -u whitedns-bot -n 20 --no-pager
   exit 1
 fi

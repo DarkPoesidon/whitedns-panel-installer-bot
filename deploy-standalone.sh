@@ -1265,36 +1265,35 @@ rm -f /etc/resolv.conf
 
 report_progress "1" "success" "Server verified: $ID $VERSION_ID ($BUNDLE_ARCH), IP: $PUBLIC_IP"
 
-report_progress "2" "in_progress" "Installing prerequisites (curl, dnsutils, iproute2, ufw, tar)..."
+report_progress "2" "in_progress" "Preparing package manager and checking system locks..."
 
-wait_for_apt() {
-  local max_wait=90
-  local elapsed=0
-  while pgrep -f "unattended-upgrade|apt.systemd.daily|apt-get|dpkg" >/dev/null 2>&1; do
-    if (( elapsed >= max_wait )); then
-      pkill -9 -f "unattended-upgrade|apt.systemd.daily" >/dev/null 2>&1 || true
-      sleep 2
-      break
-    fi
-    sleep 3
-    elapsed=$((elapsed + 3))
-  done
-}
+systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+systemctl kill --kill-who=all unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
 
-wait_for_apt
-dpkg --configure -a >/dev/null 2>&1 || true
-APT_FLAGS="-y -o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+for i in {1..10}; do
+  if ! pgrep -f "unattended-upgrade|apt.systemd.daily|apt-get|dpkg" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
 
-for attempt in 1 2 3; do
-  wait_for_apt
+pkill -9 -f "unattended-upgrade|apt.systemd.daily|apt-get|dpkg" 2>/dev/null || true
+sleep 1
+rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
+DEBIAN_FRONTEND=noninteractive timeout 25s dpkg --configure -a --force-confdef --force-confold 2>/dev/null || true
+
+report_progress "2" "in_progress" "Installing prerequisites (nginx, certbot, dnsutils, openssl)..."
+
+APT_FLAGS="-y -o DPkg::Lock::Timeout=60 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+
+for attempt in 1 2; do
   apt-get update $APT_FLAGS && break
-  sleep 3
+  sleep 2
 done
 
 for attempt in 1 2 3; do
-  wait_for_apt
   apt-get install --no-install-recommends $APT_FLAGS ca-certificates curl dnsutils iproute2 ufw tar coreutils util-linux nginx certbot openssl && break
-  sleep 4
+  sleep 3
 done
 
 report_progress "2" "success" "Dependencies successfully installed."

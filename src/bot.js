@@ -553,6 +553,10 @@ bot.on('text', async (ctx) => {
       renderRepairProgressBox(1, 6, vpsIp, 'در حال برقراری اتصال امن SSH به سرور...')
     );
 
+    let lastRepairStep = 1;
+    let lastRepairMsg = '';
+    let lastRepairEditTime = Date.now();
+
     try {
       const repairRes = await repairOverSSH({
         vpsIp,
@@ -561,13 +565,22 @@ bot.on('text', async (ctx) => {
         vpsPass,
         domain,
         onProgress: async (step, msg) => {
-          await ctx.telegram.editMessageText(
-            chatId,
-            progressMsg.message_id,
-            undefined,
-            renderRepairProgressBox(step, 6, vpsIp, msg),
-            { parse_mode: 'Markdown' }
-          ).catch(() => {});
+          const now = Date.now();
+          const stepChanged = step !== lastRepairStep;
+          const msgChanged = msg && msg !== lastRepairMsg;
+
+          if (stepChanged || (msgChanged && now - lastRepairEditTime >= 3500)) {
+            lastRepairStep = step;
+            lastRepairMsg = msg;
+            lastRepairEditTime = now;
+            await ctx.telegram.editMessageText(
+              chatId,
+              progressMsg.message_id,
+              undefined,
+              renderRepairProgressBox(step, 6, vpsIp, msg),
+              { parse_mode: 'Markdown' }
+            ).catch(() => {});
+          }
         }
       });
 
@@ -1571,8 +1584,8 @@ bot.action('deploy', async (ctx) => {
         const stepChanged = step !== lastRenderedStep;
         const msgChanged = msg && msg !== lastRenderedMsg;
 
-        // Render immediately on step change, or update message if 1.5s passed
-        if (stepChanged || (msgChanged && now - lastEditTime >= 1500)) {
+        // Render immediately on step change, or update message if 3.5s passed to prevent Telegram rate limit
+        if (stepChanged || (msgChanged && now - lastEditTime >= 3500)) {
           lastRenderedStep = step;
           lastRenderedMsg = msg;
           lastEditTime = now;

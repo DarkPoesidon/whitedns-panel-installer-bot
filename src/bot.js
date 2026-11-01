@@ -187,8 +187,12 @@ bot.command('update', async (ctx) => {
   try {
     const execOpts = { cwd: BOT_DIR };
 
+    // Ensure git is installed on the bot server
+    await execPromise('command -v git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git 2>&1)', execOpts).catch(() => {});
+
     // 1. Ensure safe directory configuration for git
     await execPromise(`git config --global --add safe.directory "${BOT_DIR}" 2>&1`, execOpts).catch(() => {});
+    await execPromise('git config --global --add safe.directory "*" 2>&1', execOpts).catch(() => {});
 
     // 2. Ensure git repository is initialized
     if (!fs.existsSync(path.join(BOT_DIR, '.git'))) {
@@ -198,10 +202,12 @@ bot.command('update', async (ctx) => {
       await execPromise('git remote set-url origin https://github.com/DarkPoesidon/whitedns-panel-installer-bot.git 2>&1', execOpts).catch(() => {});
     }
 
-    await execPromise('git fetch origin main 2>&1', execOpts);
-    const { stdout: statusOut } = await execPromise('git status -uno 2>&1', execOpts);
+    // Fetch with --all to avoid errors when no tracking branch is set
+    await execPromise('git fetch origin main 2>&1 || git fetch --all 2>&1', execOpts);
+    const { stdout: statusOut } = await execPromise('git rev-parse HEAD 2>&1', execOpts).catch(() => ({ stdout: '' }));
+    const { stdout: remoteHead } = await execPromise('git rev-parse origin/main 2>&1', execOpts).catch(() => ({ stdout: '' }));
 
-    if (statusOut.includes('Your branch is up to date') && !statusOut.includes('behind')) {
+    if (statusOut.trim() && remoteHead.trim() && statusOut.trim() === remoteHead.trim()) {
       return ctx.telegram.editMessageText(
         ctx.chat.id,
         statusMsg.message_id,

@@ -124,33 +124,58 @@ rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /va
 # Fix any partially configured packages safely with generous timeout and non-interactive flags
 DEBIAN_FRONTEND=noninteractive timeout 60s dpkg --configure -a --force-confdef --force-confold 2>/dev/null || true
 
-# Ensure universe repository is enabled on Ubuntu
+# Ensure universe repository is enabled on Ubuntu (handles both traditional and deb822 formats)
 if [[ "$ID" == "ubuntu" ]]; then
-  if ! grep -qE '^deb .* universe' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null; then
-    sed -i 's/main$/main universe/' /etc/apt/sources.list 2>/dev/null || true
-    sed -i 's/main restricted$/main restricted universe/' /etc/apt/sources.list 2>/dev/null || true
+  UNIVERSE_FOUND=0
+
+  # Check deb822 format first (Ubuntu 24.04+): /etc/apt/sources.list.d/ubuntu.sources
+  if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
+    if grep -q 'universe' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null; then
+      UNIVERSE_FOUND=1
+    else
+      # Add universe to Components line in deb822 format
+      sed -i '/^Components:/ s/$/ universe/' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+    fi
+  fi
+
+  # Check traditional format (Ubuntu 22.04): /etc/apt/sources.list
+  if [[ $UNIVERSE_FOUND -eq 0 && -f /etc/apt/sources.list ]] && grep -qE '^deb ' /etc/apt/sources.list 2>/dev/null; then
+    if grep -qE '^deb .* universe' /etc/apt/sources.list 2>/dev/null; then
+      UNIVERSE_FOUND=1
+    else
+      sed -i '/^deb /{/universe/!{s/main/main universe/}}' /etc/apt/sources.list 2>/dev/null || true
+    fi
+  fi
+
+  # Fallback: use add-apt-repository if available
+  if [[ $UNIVERSE_FOUND -eq 0 ]]; then
+    command -v add-apt-repository >/dev/null 2>&1 && add-apt-repository -y universe 2>/dev/null || true
   fi
 fi
 
-report_progress "2" "in_progress" "Installing prerequisites (nginx, openssl, curl, tar)..."
+report_progress "2" "in_progress" "Updating package lists..."
 
 APT_LOG=$(mktemp /tmp/whitedns-apt.XXXXXX)
 APT_FLAGS="-y -o DPkg::Lock::Timeout=60 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
-# Run apt-get update
+# Run apt-get update (MUST run after enabling universe repo above)
 apt-get update $APT_FLAGS >"$APT_LOG" 2>&1 || {
   rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock* /var/cache/apt/archives/lock 2>/dev/null || true
   apt-get update $APT_FLAGS >"$APT_LOG" 2>&1 || true
 }
 
+report_progress "2" "in_progress" "Installing prerequisites (nginx, openssl, curl, tar)..."
+
 # Install core required packages (ca-certificates, curl, tar, openssl)
 apt-get install -y --no-install-recommends $APT_FLAGS ca-certificates curl tar openssl iproute2 >"$APT_LOG" 2>&1 || \
 apt-get install -y $APT_FLAGS ca-certificates curl tar openssl iproute2 >"$APT_LOG" 2>&1 || true
 
-# Install Nginx reverse proxy
+# Install Nginx reverse proxy (try nginx meta-package, fallback to nginx-light or nginx-core)
 if ! command -v nginx >/dev/null 2>&1; then
   apt-get install -y --no-install-recommends $APT_FLAGS nginx >"$APT_LOG" 2>&1 || \
-  apt-get install -y $APT_FLAGS nginx >"$APT_LOG" 2>&1 || true
+  apt-get install -y $APT_FLAGS nginx >"$APT_LOG" 2>&1 || \
+  apt-get install -y --no-install-recommends $APT_FLAGS nginx-light >"$APT_LOG" 2>&1 || \
+  apt-get install -y --no-install-recommends $APT_FLAGS nginx-core >"$APT_LOG" 2>&1 || true
 fi
 
 # Install Certbot (optional: openssl self-signed fallback exists in Step 6 if unavailable)
@@ -185,15 +210,19 @@ report_progress "2" "success" "Dependencies successfully installed."
 # ------------------------------------------------------------------------------
 report_progress "3" "in_progress" "Fetching latest official WhiteDNS Soar Server release..."
 
+# Detect latest release tag with multi-tier fallback (API, redirect, fallback version)
 PANEL_REPO="WhiteDNS/Soar-Server"
-LATEST_TAG=$(curl -fsSL --retry 3 "https://api.github.com/repos/$PANEL_REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"tag_name": "panel-v?([^"]+)".*/\1/')
+LATEST_TAG=$(curl -fsSL --retry 3 "https://api.github.com/repos/$PANEL_REPO/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"tag_name": "panel-v?([^"]+)".*/\1/' || true)
 
 if [[ -z "$LATEST_TAG" ]]; then
-  LATEST_URL=$(curl -fsSL -o /dev/null -w "%{url_effective}" "https://github.com/$PANEL_REPO/releases/latest")
+  LATEST_URL=$(curl -fsSL -o /dev/null -w "%{url_effective}" "https://github.com/$PANEL_REPO/releases/latest" 2>/dev/null || true)
   LATEST_TAG="${LATEST_URL##*/panel-v}"
 fi
 
-[[ -n "$LATEST_TAG" ]] || die "Failed to determine latest WhiteDNS release version."
+# Fallback default version if GitHub API/redirect is unreachable or rate-limited
+if [[ -z "$LATEST_TAG" || "$LATEST_TAG" == "latest" || "$LATEST_TAG" == *"/"* ]]; then
+  LATEST_TAG="0.14.0"
+fi
 
 WORK_DIR=$(mktemp -d /tmp/whitedns-soar-install.XXXXXX)
 cleanup() { rm -rf -- "$WORK_DIR"; }
@@ -409,18 +438,26 @@ else
   fi
 fi
 
+# Check if IPv6 is supported by host kernel before enabling IPv6 listen sockets
+IPV6_LISTEN_80=""
+IPV6_LISTEN_443=""
+if [[ -f /proc/net/if_inet6 ]] && [[ $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || echo 0) -eq 0 ]]; then
+  IPV6_LISTEN_80="listen [::]:80;"
+  IPV6_LISTEN_443="listen [::]:443 ssl;"
+fi
+
 # Create dedicated Nginx reverse proxy configuration
 cat > /etc/nginx/sites-available/soar-panel <<NGINX_CONF
 server {
     listen 80;
-    listen [::]:80;
+    ${IPV6_LISTEN_80}
     server_name $PANEL_DOMAIN;
     return 301 https://\$host\$request_uri;
 }
 
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    ${IPV6_LISTEN_443}
     server_name $PANEL_DOMAIN;
 
     ssl_certificate $CERT_FILE;

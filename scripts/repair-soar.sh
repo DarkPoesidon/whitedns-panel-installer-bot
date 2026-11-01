@@ -177,17 +177,24 @@ if [[ -n "$PANEL_DOMAIN" ]]; then
 fi
 
 if [[ -n "$PANEL_DOMAIN" && -n "$CERT_FILE" ]]; then
+IPV6_LISTEN_80=""
+IPV6_LISTEN_443=""
+if [[ -f /proc/net/if_inet6 ]] && [[ $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || echo 0) -eq 0 ]]; then
+  IPV6_LISTEN_80="listen [::]:80;"
+  IPV6_LISTEN_443="listen [::]:443 ssl;"
+fi
+
 cat > /etc/nginx/sites-available/soar-panel <<NGINX_CONF
 server {
     listen 80;
-    listen [::]:80;
+    ${IPV6_LISTEN_80}
     server_name $PANEL_DOMAIN;
     return 301 https://\$host\$request_uri;
 }
 
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    ${IPV6_LISTEN_443}
     server_name $PANEL_DOMAIN;
 
     ssl_certificate $CERT_FILE;

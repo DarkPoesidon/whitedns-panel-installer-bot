@@ -52,10 +52,18 @@ if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
   fi
 fi
 
-if [[ -L /etc/resolv.conf ]] || ! grep -qE '^nameserver (1\.1\.1\.1|8\.8\.8\.8)' /etc/resolv.conf 2>/dev/null; then
-  rm -f /etc/resolv.conf
-  printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 9.9.9.9\n" > /etc/resolv.conf
-fi
+EXISTING_NS=$(grep -E '^[[:space:]]*nameserver[[:space:]]+' /etc/resolv.conf 2>/dev/null | grep -v '127\.0\.0\.' | awk '{print $2}' | tr '\n' ' ' || true)
+
+rm -f /etc/resolv.conf
+{
+  echo "nameserver 1.1.1.1"
+  echo "nameserver 8.8.8.8"
+  echo "nameserver 9.9.9.9"
+  for ns in $EXISTING_NS; do
+    echo "nameserver $ns"
+  done
+  echo "options timeout:2 attempts:3"
+} > /etc/resolv.conf
 
 report_progress "2" "success" "Port 53 freed from systemd-resolved."
 
@@ -131,7 +139,7 @@ report_progress "4" "success" "Firewall ports 53, 80 and 443 verified."
 # ------------------------------------------------------------------------------
 report_progress "5" "in_progress" "Verifying SSL certificate and Nginx reverse proxy..."
 
-which nginx >/dev/null 2>&1 || apt-get install -y --no-install-recommends nginx certbot openssl
+which nginx >/dev/null 2>&1 || apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold nginx certbot openssl || true
 
 CERT_FILE=""
 KEY_FILE=""

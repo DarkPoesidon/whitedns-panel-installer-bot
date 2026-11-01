@@ -9,6 +9,25 @@ const installerScriptPath = path.resolve(__dirname, '../scripts/install-soar.sh'
 const uninstallerScriptPath = path.resolve(__dirname, '../scripts/uninstall-soar.sh');
 const repairScriptPath = path.resolve(__dirname, '../scripts/repair-soar.sh');
 
+function extractErrorMessage(fullOutput, defaultMsg) {
+  const errorMatch = fullOutput.match(/\[FATAL ERROR\] (.+)/);
+  if (errorMatch) return errorMatch[1].trim();
+
+  const lines = fullOutput
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l.length > 0 && !l.startsWith('[PROGRESS]') && !l.startsWith('<<<') && !l.startsWith('>>>'));
+
+  const errorLines = lines.filter(l => /^(E:|error:|fatal:|dpkg:|apt-get:|curl:|tar:)/i.test(l));
+  if (errorLines.length > 0) {
+    return errorLines.slice(-3).join('\n');
+  }
+  if (lines.length > 0) {
+    return lines.slice(-2).join('\n');
+  }
+  return defaultMsg;
+}
+
 /**
  * Executes the WhiteDNS Soar Server headless installation directly on remote VPS via SSH
  */
@@ -95,8 +114,7 @@ export async function installOverSSH({
 
           if (code !== 0) {
             conn.end();
-            const errorMatch = fullOutput.match(/\[FATAL ERROR\] (.+)/);
-            const errorMsg = errorMatch ? errorMatch[1] : `اسکریپت با کد خطا ${code} به پایان رسید.`;
+            const errorMsg = extractErrorMessage(fullOutput, `اسکریپت با کد خطا ${code} به پایان رسید.`);
             return reject(new Error(errorMsg));
           }
 
@@ -269,8 +287,7 @@ export async function uninstallOverSSH({
           conn.end();
 
           if (code !== 0) {
-            const errorMatch = fullOutput.match(/\[FATAL ERROR\] (.+)/);
-            const errorMsg = errorMatch ? errorMatch[1] : `اسکریپت حذف با کد خطا ${code} به پایان رسید.`;
+            const errorMsg = extractErrorMessage(fullOutput, `اسکریپت حذف با کد خطا ${code} به پایان رسید.`);
             return reject(new Error(errorMsg));
           }
 
@@ -376,8 +393,7 @@ export async function repairOverSSH({
           conn.end();
 
           if (code !== 0) {
-            const errorMatch = fullOutput.match(/\[FATAL ERROR\] (.+)/);
-            const errorMsg = errorMatch ? errorMatch[1] : `اسکریپت عیب‌یابی با کد خطا ${code} به پایان رسید.`;
+            const errorMsg = extractErrorMessage(fullOutput, `اسکریپت عیب‌یابی با کد خطا ${code} به پایان رسید.`);
             return reject(new Error(errorMsg));
           }
 

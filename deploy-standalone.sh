@@ -1251,11 +1251,52 @@ if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
   fi
 fi
 
+EXISTING_NS=$(grep -E '^[[:space:]]*nameserver[[:space:]]+' /etc/resolv.conf 2>/dev/null | grep -v '127\.0\.0\.' | awk '{print $2}' | tr '\n' ' ' || true)
+rm -f /etc/resolv.conf
+{
+  echo "nameserver 1.1.1.1"
+  echo "nameserver 8.8.8.8"
+  echo "nameserver 9.9.9.9"
+  for ns in $EXISTING_NS; do
+    echo "nameserver $ns"
+  done
+  echo "options timeout:2 attempts:3"
+} > /etc/resolv.conf
+
 report_progress "1" "success" "Server verified: $ID $VERSION_ID ($BUNDLE_ARCH), IP: $PUBLIC_IP"
 
 report_progress "2" "in_progress" "Installing prerequisites (curl, dnsutils, iproute2, ufw, tar)..."
-apt-get update -y
-apt-get install -y --no-install-recommends ca-certificates curl dnsutils iproute2 ufw tar coreutils util-linux
+
+wait_for_apt() {
+  local max_wait=90
+  local elapsed=0
+  while pgrep -f "unattended-upgrade|apt.systemd.daily|apt-get|dpkg" >/dev/null 2>&1; do
+    if (( elapsed >= max_wait )); then
+      pkill -9 -f "unattended-upgrade|apt.systemd.daily" >/dev/null 2>&1 || true
+      sleep 2
+      break
+    fi
+    sleep 3
+    elapsed=$((elapsed + 3))
+  done
+}
+
+wait_for_apt
+dpkg --configure -a >/dev/null 2>&1 || true
+APT_FLAGS="-y -o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+
+for attempt in 1 2 3; do
+  wait_for_apt
+  apt-get update $APT_FLAGS && break
+  sleep 3
+done
+
+for attempt in 1 2 3; do
+  wait_for_apt
+  apt-get install --no-install-recommends $APT_FLAGS ca-certificates curl dnsutils iproute2 ufw tar coreutils util-linux nginx certbot openssl && break
+  sleep 4
+done
+
 report_progress "2" "success" "Dependencies successfully installed."
 
 report_progress "3" "in_progress" "Fetching latest official WhiteDNS Soar Server release..."

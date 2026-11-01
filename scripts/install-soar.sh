@@ -80,10 +80,18 @@ if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
 fi
 
 # Crucial: Ensure upstream DNS resolver is active and never loops back to dead 127.0.0.53
-if [[ -L /etc/resolv.conf ]] || ! grep -qE '^nameserver (1\.1\.1\.1|8\.8\.8\.8)' /etc/resolv.conf 2>/dev/null; then
-  rm -f /etc/resolv.conf
-  printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 9.9.9.9\n" > /etc/resolv.conf
-fi
+EXISTING_NS=$(grep -E '^[[:space:]]*nameserver[[:space:]]+' /etc/resolv.conf 2>/dev/null | grep -v '127\.0\.0\.' | awk '{print $2}' | tr '\n' ' ' || true)
+
+rm -f /etc/resolv.conf
+{
+  echo "nameserver 1.1.1.1"
+  echo "nameserver 8.8.8.8"
+  echo "nameserver 9.9.9.9"
+  for ns in $EXISTING_NS; do
+    echo "nameserver $ns"
+  done
+  echo "options timeout:2 attempts:3"
+} > /etc/resolv.conf
 
 report_progress "1" "success" "Server verified: $ID $VERSION_ID ($BUNDLE_ARCH), IP: $PUBLIC_IP"
 
@@ -92,8 +100,57 @@ report_progress "1" "success" "Server verified: $ID $VERSION_ID ($BUNDLE_ARCH), 
 # ------------------------------------------------------------------------------
 report_progress "2" "in_progress" "Installing prerequisites (curl, dnsutils, nginx, certbot, ufw)..."
 
-apt-get update -y
-apt-get install -y --no-install-recommends ca-certificates curl dnsutils iproute2 ufw tar coreutils util-linux nginx certbot openssl
+# Ensure no background apt/unattended-upgrades process is blocking package locks
+wait_for_apt() {
+  local max_wait=90
+  local elapsed=0
+  while pgrep -f "unattended-upgrade|apt.systemd.daily|apt-get|dpkg" >/dev/null 2>&1; do
+    if (( elapsed >= max_wait )); then
+      pkill -9 -f "unattended-upgrade|apt.systemd.daily" >/dev/null 2>&1 || true
+      sleep 2
+      break
+    fi
+    sleep 3
+    elapsed=$((elapsed + 3))
+    report_progress "2" "in_progress" "Waiting for server background package updates to finish (${elapsed}s)..."
+  done
+}
+
+wait_for_apt
+dpkg --configure -a >/dev/null 2>&1 || true
+
+APT_FLAGS="-y -o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+
+# Retry loop for apt-get update
+APT_UPDATED=0
+for attempt in 1 2 3; do
+  wait_for_apt
+  if apt-get update $APT_FLAGS; then
+    APT_UPDATED=1
+    break
+  fi
+  sleep 3
+done
+
+if [[ $APT_UPDATED -eq 0 ]]; then
+  # Clean lock and try once more if broken
+  rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock* /var/cache/apt/archives/lock 2>/dev/null || true
+  apt-get update $APT_FLAGS || true
+fi
+
+# Retry loop for apt-get install
+APT_INSTALLED=0
+for attempt in 1 2 3; do
+  wait_for_apt
+  if apt-get install --no-install-recommends $APT_FLAGS \
+    ca-certificates curl dnsutils iproute2 ufw tar coreutils util-linux nginx certbot openssl; then
+    APT_INSTALLED=1
+    break
+  fi
+  sleep 4
+done
+
+[[ $APT_INSTALLED -eq 1 ]] || die "Failed to install required system packages via apt-get (exit code 100). Check server package manager or background updates."
 
 report_progress "2" "success" "Dependencies successfully installed."
 

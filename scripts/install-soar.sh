@@ -81,13 +81,15 @@ fi
 
 # Crucial: Ensure upstream DNS resolver is active and never loops back to dead 127.0.0.53
 EXISTING_NS=$(grep -E '^[[:space:]]*nameserver[[:space:]]+' /etc/resolv.conf 2>/dev/null | grep -v '127\.0\.0\.' | awk '{print $2}' | tr '\n' ' ' || true)
+RESOLVE_NS=$(grep -E '^[[:space:]]*nameserver[[:space:]]+' /run/systemd/resolve/resolv.conf 2>/dev/null | grep -v '127\.0\.0\.' | awk '{print $2}' | tr '\n' ' ' || true)
+UPSTREAM_NS=$(printf "%s %s" "$EXISTING_NS" "$RESOLVE_NS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
 
 rm -f /etc/resolv.conf
 {
   echo "nameserver 1.1.1.1"
   echo "nameserver 8.8.8.8"
   echo "nameserver 9.9.9.9"
-  for ns in $EXISTING_NS; do
+  for ns in $UPSTREAM_NS; do
     echo "nameserver $ns"
   done
   echo "options timeout:2 attempts:3"
@@ -104,56 +106,78 @@ report_progress "2" "in_progress" "Preparing package manager and checking system
 systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 systemctl kill --kill-who=all unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
 
-# Wait gracefully up to 10 seconds for any running apt/dpkg process to finish
-for i in {1..10}; do
+# Wait gracefully up to 15 seconds for any running apt/dpkg process to finish
+for i in {1..15}; do
   if ! pgrep -f "unattended-upgrade|apt.systemd.daily|apt-get|dpkg" >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
 
-# If still held after 10s, terminate stale lock holders so installation is never stalled
+# If still held after 15s, terminate stale lock holders so installation is never stalled
 pkill -9 -f "unattended-upgrade|apt.systemd.daily|apt-get|dpkg" 2>/dev/null || true
 sleep 1
 
 # Remove any stale lock files left behind
 rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
 
-# Fix any partially configured packages safely with strict timeout and non-interactive flags
-DEBIAN_FRONTEND=noninteractive timeout 25s dpkg --configure -a --force-confdef --force-confold 2>/dev/null || true
+# Fix any partially configured packages safely with generous timeout and non-interactive flags
+DEBIAN_FRONTEND=noninteractive timeout 60s dpkg --configure -a --force-confdef --force-confold 2>/dev/null || true
 
-report_progress "2" "in_progress" "Installing prerequisites (nginx, certbot, dnsutils, openssl)..."
-
-APT_FLAGS="-y -o DPkg::Lock::Timeout=60 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
-
-# Run apt-get update with retry
-APT_UPDATED=0
-for attempt in 1 2; do
-  if apt-get update $APT_FLAGS; then
-    APT_UPDATED=1
-    break
+# Ensure universe repository is enabled on Ubuntu
+if [[ "$ID" == "ubuntu" ]]; then
+  if ! grep -qE '^deb .* universe' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null; then
+    sed -i 's/main$/main universe/' /etc/apt/sources.list 2>/dev/null || true
+    sed -i 's/main restricted$/main restricted universe/' /etc/apt/sources.list 2>/dev/null || true
   fi
-  sleep 2
-done
-
-if [[ $APT_UPDATED -eq 0 ]]; then
-  rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock* /var/cache/apt/archives/lock 2>/dev/null || true
-  apt-get update $APT_FLAGS || true
 fi
 
-# Run apt-get install with retry
-APT_INSTALLED=0
-for attempt in 1 2 3; do
-  if apt-get install --no-install-recommends $APT_FLAGS \
-    ca-certificates curl dnsutils iproute2 ufw tar coreutils util-linux nginx certbot openssl; then
-    APT_INSTALLED=1
-    break
+report_progress "2" "in_progress" "Installing prerequisites (nginx, openssl, curl, tar)..."
+
+APT_LOG=$(mktemp /tmp/whitedns-apt.XXXXXX)
+APT_FLAGS="-y -o DPkg::Lock::Timeout=60 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+
+# Run apt-get update
+apt-get update $APT_FLAGS >"$APT_LOG" 2>&1 || {
+  rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock* /var/cache/apt/archives/lock 2>/dev/null || true
+  apt-get update $APT_FLAGS >"$APT_LOG" 2>&1 || true
+}
+
+# Install core required packages (ca-certificates, curl, tar, openssl)
+apt-get install -y --no-install-recommends $APT_FLAGS ca-certificates curl tar openssl iproute2 >"$APT_LOG" 2>&1 || \
+apt-get install -y $APT_FLAGS ca-certificates curl tar openssl iproute2 >"$APT_LOG" 2>&1 || true
+
+# Install Nginx reverse proxy
+if ! command -v nginx >/dev/null 2>&1; then
+  apt-get install -y --no-install-recommends $APT_FLAGS nginx >"$APT_LOG" 2>&1 || \
+  apt-get install -y $APT_FLAGS nginx >"$APT_LOG" 2>&1 || true
+fi
+
+# Install Certbot (optional: openssl self-signed fallback exists in Step 6 if unavailable)
+if ! command -v certbot >/dev/null 2>&1; then
+  apt-get install -y --no-install-recommends $APT_FLAGS certbot >/dev/null 2>&1 || true
+fi
+
+# Install optional utilities (bind9-dnsutils, ufw)
+apt-get install -y --no-install-recommends $APT_FLAGS bind9-dnsutils >/dev/null 2>&1 || \
+apt-get install -y --no-install-recommends $APT_FLAGS dnsutils >/dev/null 2>&1 || true
+apt-get install -y --no-install-recommends $APT_FLAGS ufw >/dev/null 2>&1 || true
+
+# Validate essential tools
+MISSING_TOOLS=()
+for tool in curl tar openssl nginx; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    MISSING_TOOLS+=("$tool")
   fi
-  sleep 3
 done
 
-[[ $APT_INSTALLED -eq 1 ]] || die "Failed to install required system packages via apt-get. Check server internet or repos."
+if [[ ${#MISSING_TOOLS[@]} -gt 0 ]]; then
+  APT_LAST_ERR=$(grep -iE '^(E:|error:|fatal:)' "$APT_LOG" 2>/dev/null | tail -n 2 | tr '\n' ' ' || true)
+  rm -f "$APT_LOG"
+  die "Failed to install required tools (${MISSING_TOOLS[*]}). Error: ${APT_LAST_ERR:-check server repository status}"
+fi
 
+rm -f "$APT_LOG"
 report_progress "2" "success" "Dependencies successfully installed."
 
 # ------------------------------------------------------------------------------

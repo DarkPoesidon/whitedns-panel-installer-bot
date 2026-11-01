@@ -1252,12 +1252,15 @@ if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
 fi
 
 EXISTING_NS=$(grep -E '^[[:space:]]*nameserver[[:space:]]+' /etc/resolv.conf 2>/dev/null | grep -v '127\.0\.0\.' | awk '{print $2}' | tr '\n' ' ' || true)
+RESOLVE_NS=$(grep -E '^[[:space:]]*nameserver[[:space:]]+' /run/systemd/resolve/resolv.conf 2>/dev/null | grep -v '127\.0\.0\.' | awk '{print $2}' | tr '\n' ' ' || true)
+UPSTREAM_NS=$(printf "%s %s" "$EXISTING_NS" "$RESOLVE_NS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
+
 rm -f /etc/resolv.conf
 {
   echo "nameserver 1.1.1.1"
   echo "nameserver 8.8.8.8"
   echo "nameserver 9.9.9.9"
-  for ns in $EXISTING_NS; do
+  for ns in $UPSTREAM_NS; do
     echo "nameserver $ns"
   done
   echo "options timeout:2 attempts:3"
@@ -1265,12 +1268,15 @@ rm -f /etc/resolv.conf
 
 report_progress "1" "success" "Server verified: $ID $VERSION_ID ($BUNDLE_ARCH), IP: $PUBLIC_IP"
 
+# ------------------------------------------------------------------------------
+# 2. Install Required Dependencies
+# ------------------------------------------------------------------------------
 report_progress "2" "in_progress" "Preparing package manager and checking system locks..."
 
 systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 systemctl kill --kill-who=all unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
 
-for i in {1..10}; do
+for i in {1..15}; do
   if ! pgrep -f "unattended-upgrade|apt.systemd.daily|apt-get|dpkg" >/dev/null 2>&1; then
     break
   fi
@@ -1280,22 +1286,55 @@ done
 pkill -9 -f "unattended-upgrade|apt.systemd.daily|apt-get|dpkg" 2>/dev/null || true
 sleep 1
 rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
-DEBIAN_FRONTEND=noninteractive timeout 25s dpkg --configure -a --force-confdef --force-confold 2>/dev/null || true
+DEBIAN_FRONTEND=noninteractive timeout 60s dpkg --configure -a --force-confdef --force-confold 2>/dev/null || true
 
-report_progress "2" "in_progress" "Installing prerequisites (nginx, certbot, dnsutils, openssl)..."
+if [[ "$ID" == "ubuntu" ]]; then
+  if ! grep -qE '^deb .* universe' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null; then
+    sed -i 's/main$/main universe/' /etc/apt/sources.list 2>/dev/null || true
+    sed -i 's/main restricted$/main restricted universe/' /etc/apt/sources.list 2>/dev/null || true
+  fi
+fi
 
+report_progress "2" "in_progress" "Installing prerequisites (nginx, openssl, curl, tar)..."
+
+APT_LOG=$(mktemp /tmp/whitedns-apt.XXXXXX)
 APT_FLAGS="-y -o DPkg::Lock::Timeout=60 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
-for attempt in 1 2; do
-  apt-get update $APT_FLAGS && break
-  sleep 2
+apt-get update $APT_FLAGS >"$APT_LOG" 2>&1 || {
+  rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock* /var/cache/apt/archives/lock 2>/dev/null || true
+  apt-get update $APT_FLAGS >"$APT_LOG" 2>&1 || true
+}
+
+apt-get install -y --no-install-recommends $APT_FLAGS ca-certificates curl tar openssl iproute2 >"$APT_LOG" 2>&1 || \
+apt-get install -y $APT_FLAGS ca-certificates curl tar openssl iproute2 >"$APT_LOG" 2>&1 || true
+
+if ! command -v nginx >/dev/null 2>&1; then
+  apt-get install -y --no-install-recommends $APT_FLAGS nginx >"$APT_LOG" 2>&1 || \
+  apt-get install -y $APT_FLAGS nginx >"$APT_LOG" 2>&1 || true
+fi
+
+if ! command -v certbot >/dev/null 2>&1; then
+  apt-get install -y --no-install-recommends $APT_FLAGS certbot >/dev/null 2>&1 || true
+fi
+
+apt-get install -y --no-install-recommends $APT_FLAGS bind9-dnsutils >/dev/null 2>&1 || \
+apt-get install -y --no-install-recommends $APT_FLAGS dnsutils >/dev/null 2>&1 || true
+apt-get install -y --no-install-recommends $APT_FLAGS ufw >/dev/null 2>&1 || true
+
+MISSING_TOOLS=()
+for tool in curl tar openssl nginx; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    MISSING_TOOLS+=("$tool")
+  fi
 done
 
-for attempt in 1 2 3; do
-  apt-get install --no-install-recommends $APT_FLAGS ca-certificates curl dnsutils iproute2 ufw tar coreutils util-linux nginx certbot openssl && break
-  sleep 3
-done
+if [[ ${#MISSING_TOOLS[@]} -gt 0 ]]; then
+  APT_LAST_ERR=$(grep -iE '^(E:|error:|fatal:)' "$APT_LOG" 2>/dev/null | tail -n 2 | tr '\n' ' ' || true)
+  rm -f "$APT_LOG"
+  die "Failed to install required tools (${MISSING_TOOLS[*]}). Error: ${APT_LAST_ERR:-check server repository status}"
+fi
 
+rm -f "$APT_LOG"
 report_progress "2" "success" "Dependencies successfully installed."
 
 report_progress "3" "in_progress" "Fetching latest official WhiteDNS Soar Server release..."

@@ -1,19 +1,31 @@
 /**
  * Generates a strong, random ASCII password (16 chars) suitable for Soar panel admin
+ * Shell-safe: uses only unambiguous alphanumeric characters [A-Za-z0-9] without '$' or quotes
  */
 export function generateStrongPassword(length = 16) {
-  const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*';
-  let pass = '';
-  // Ensure at least one lower, one upper, one number, one special
-  pass += 'abcdefghjkmnpqrstuvwxyz'[Math.floor(Math.random() * 23)];
-  pass += 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random() * 23)];
-  pass += '23456789'[Math.floor(Math.random() * 8)];
-  pass += '!@#$%^&*'[Math.floor(Math.random() * 8)];
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghjkmnpqrstuvwxyz';
+  const digits = '23456789';
+  const all = upper + lower + digits;
+
+  const result = [
+    upper[Math.floor(Math.random() * upper.length)],
+    lower[Math.floor(Math.random() * lower.length)],
+    digits[Math.floor(Math.random() * digits.length)],
+    lower[Math.floor(Math.random() * lower.length)]
+  ];
 
   for (let i = 4; i < length; i++) {
-    pass += chars[Math.floor(Math.random() * chars.length)];
+    result.push(all[Math.floor(Math.random() * all.length)]);
   }
-  return pass.split('').sort(() => 0.5 - Math.random()).join('');
+
+  // Modern Fisher-Yates shuffle for uniform distribution
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+
+  return result.join('');
 }
 
 /**

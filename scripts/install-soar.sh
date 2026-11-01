@@ -65,18 +65,26 @@ esac
 [[ -n "$PANEL_DOMAIN" ]] || die "PANEL_DOMAIN is missing."
 [[ -n "$ADMIN_PASS" ]] || die "ADMIN_PASS is missing."
 
-# Detect public IP if not supplied
+# Detect public IP if not supplied (multi-source fallback)
 if [[ -z "$PUBLIC_IP" ]]; then
-  PUBLIC_IP=$(curl -4s --connect-timeout 5 https://api.ipify.org || ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i=="src"){print $(i+1);exit}}')
+  PUBLIC_IP=$(curl -4s --connect-timeout 3 https://api.ipify.org 2>/dev/null || \
+              curl -4s --connect-timeout 3 https://icanhazip.com 2>/dev/null || \
+              curl -4s --connect-timeout 3 https://ifconfig.me 2>/dev/null || \
+              ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i=="src"){print $(i+1);exit}}' || \
+              hostname -I 2>/dev/null | awk '{print $1}')
 fi
+PUBLIC_IP=$(echo "$PUBLIC_IP" | tr -d ' \n\r')
 [[ -n "$PUBLIC_IP" ]] || die "Could not determine PUBLIC_IP."
 
-# Fix systemd-resolved conflict on port 53 (common on Ubuntu)
+# Fix systemd-resolved conflict on port 53 (common on Ubuntu/Debian)
 if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-  if grep -qE '^#?DNSStubListener=yes' /etc/systemd/resolved.conf; then
+  if grep -qE '^#?DNSStubListener=' /etc/systemd/resolved.conf 2>/dev/null; then
     sed -i 's/^#\?DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf
-    systemctl restart systemd-resolved 2>/dev/null || true
+  else
+    mkdir -p /etc/systemd/resolved.conf.d
+    echo -e "[Resolve]\nDNSStubListener=no" > /etc/systemd/resolved.conf.d/no-stub.conf
   fi
+  systemctl restart systemd-resolved 2>/dev/null || true
 fi
 
 # Crucial: Ensure upstream DNS resolver is active and never loops back to dead 127.0.0.53
@@ -86,12 +94,12 @@ UPSTREAM_NS=$(printf "%s %s" "$EXISTING_NS" "$RESOLVE_NS" | tr ' ' '\n' | sort -
 
 rm -f /etc/resolv.conf
 {
-  echo "nameserver 1.1.1.1"
-  echo "nameserver 8.8.8.8"
-  echo "nameserver 9.9.9.9"
   for ns in $UPSTREAM_NS; do
     echo "nameserver $ns"
   done
+  echo "nameserver 1.1.1.1"
+  echo "nameserver 8.8.8.8"
+  echo "nameserver 9.9.9.9"
   echo "options timeout:2 attempts:3"
 } > /etc/resolv.conf
 

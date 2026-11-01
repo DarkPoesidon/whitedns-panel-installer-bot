@@ -85,7 +85,7 @@ cd "$BOT_DIR"
 npm install --omit=dev
 
 # 5. Make scripts executable and create menu symlinks
-chmod +x "$BOT_DIR/scripts/install-soar.sh" "$BOT_DIR/scripts/uninstall-soar.sh" 2>/dev/null || true
+chmod +x "$BOT_DIR/scripts/install-soar.sh" "$BOT_DIR/scripts/repair-soar.sh" "$BOT_DIR/scripts/uninstall-soar.sh" 2>/dev/null || true
 chmod +x "$BOT_DIR/menu.sh" "$BOT_DIR/update.sh" "$BOT_DIR/uninstall.sh" 2>/dev/null || true
 cat > /usr/bin/whitedns-bot <<'EOF_BIN'
 #!/usr/bin/env bash

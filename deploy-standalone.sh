@@ -35,6 +35,7 @@ fi
 
 # Initialize git repository so self-updates work
 git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
+git config --global --add safe.directory "*" 2>/dev/null || true
 if [[ ! -d "$INSTALL_DIR/.git" ]]; then
   (cd "$INSTALL_DIR" && (git init -b main 2>/dev/null || git init) && (git remote add origin https://github.com/DarkPoesidon/whitedns-panel-installer-bot.git 2>/dev/null || true)) 2>/dev/null || true
 fi
@@ -110,6 +111,10 @@ db.exec(`
     vps_user TEXT DEFAULT 'root',
     vps_pass TEXT,
     admin_pass TEXT,
+    repair_ip TEXT,
+    repair_domain TEXT,
+    uninst_ip TEXT,
+    uninst_domain TEXT,
     updated_at INTEGER DEFAULT (strftime('%s', 'now'))
   );
 
@@ -124,6 +129,12 @@ db.exec(`
   );
 `);
 
+// Migration guards for existing databases
+try { db.exec('ALTER TABLE sessions ADD COLUMN repair_ip TEXT'); } catch (e) {}
+try { db.exec('ALTER TABLE sessions ADD COLUMN repair_domain TEXT'); } catch (e) {}
+try { db.exec('ALTER TABLE sessions ADD COLUMN uninst_ip TEXT'); } catch (e) {}
+try { db.exec('ALTER TABLE sessions ADD COLUMN uninst_domain TEXT'); } catch (e) {}
+
 export function getSession(chatId) {
   const row = db.prepare('SELECT * FROM sessions WHERE chat_id = ?').get(chatId);
   if (!row) return null;
@@ -137,7 +148,11 @@ export function getSession(chatId) {
     vpsPort: row.vps_port,
     vpsUser: row.vps_user,
     vpsPass: row.vps_pass,
-    adminPass: row.admin_pass
+    adminPass: row.admin_pass,
+    repairIp: row.repair_ip,
+    repairDomain: row.repair_domain,
+    uninstIp: row.uninst_ip,
+    uninstDomain: row.uninst_domain
   };
 }
 
@@ -145,8 +160,8 @@ export function saveSession(chatId, fields) {
   const existing = getSession(chatId);
   if (!existing) {
     db.prepare(`
-      INSERT INTO sessions (chat_id, step, cf_token, zone_id, domain, vps_ip, vps_port, vps_user, vps_pass, admin_pass, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+      INSERT INTO sessions (chat_id, step, cf_token, zone_id, domain, vps_ip, vps_port, vps_user, vps_pass, admin_pass, repair_ip, repair_domain, uninst_ip, uninst_domain, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
     `).run(
       chatId,
       fields.step || 'IDLE',
@@ -157,7 +172,11 @@ export function saveSession(chatId, fields) {
       fields.vpsPort || 22,
       fields.vpsUser || 'root',
       fields.vpsPass || null,
-      fields.adminPass || null
+      fields.adminPass || null,
+      fields.repairIp || null,
+      fields.repairDomain || null,
+      fields.uninstIp || null,
+      fields.uninstDomain || null
     );
   } else {
     const updated = { ...existing, ...fields };
@@ -172,6 +191,10 @@ export function saveSession(chatId, fields) {
         vps_user = ?,
         vps_pass = ?,
         admin_pass = ?,
+        repair_ip = ?,
+        repair_domain = ?,
+        uninst_ip = ?,
+        uninst_domain = ?,
         updated_at = strftime('%s', 'now')
       WHERE chat_id = ?
     `).run(
@@ -184,6 +207,10 @@ export function saveSession(chatId, fields) {
       updated.vpsUser,
       updated.vpsPass,
       updated.adminPass,
+      updated.repairIp || null,
+      updated.repairDomain || null,
+      updated.uninstIp || null,
+      updated.uninstDomain || null,
       chatId
     );
   }
@@ -191,8 +218,8 @@ export function saveSession(chatId, fields) {
 
 export function resetSession(chatId, initialStep = 'AWAITING_CF_EMAIL') {
   db.prepare(`
-    INSERT INTO sessions (chat_id, step, cf_token, zone_id, domain, vps_ip, vps_port, vps_user, vps_pass, admin_pass, updated_at)
-    VALUES (?, ?, NULL, NULL, NULL, NULL, 22, 'root', NULL, NULL, strftime('%s', 'now'))
+    INSERT INTO sessions (chat_id, step, cf_token, zone_id, domain, vps_ip, vps_port, vps_user, vps_pass, admin_pass, repair_ip, repair_domain, uninst_ip, uninst_domain, updated_at)
+    VALUES (?, ?, NULL, NULL, NULL, NULL, 22, 'root', NULL, NULL, NULL, NULL, NULL, NULL, strftime('%s', 'now'))
     ON CONFLICT(chat_id) DO UPDATE SET
       step = ?,
       cf_token = NULL,
@@ -203,6 +230,10 @@ export function resetSession(chatId, initialStep = 'AWAITING_CF_EMAIL') {
       vps_user = 'root',
       vps_pass = NULL,
       admin_pass = NULL,
+      repair_ip = NULL,
+      repair_domain = NULL,
+      uninst_ip = NULL,
+      uninst_domain = NULL,
       updated_at = strftime('%s', 'now')
   `).run(chatId, initialStep, initialStep);
 }
@@ -574,20 +605,32 @@ EOF_CF
 cat > "$INSTALL_DIR/src/ui.js" <<'EOF_UI'
 /**
  * Generates a strong, random ASCII password (16 chars) suitable for Soar panel admin
+ * Shell-safe: uses only unambiguous alphanumeric characters [A-Za-z0-9] without '$' or quotes
  */
 export function generateStrongPassword(length = 16) {
-  const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*';
-  let pass = '';
-  // Ensure at least one lower, one upper, one number, one special
-  pass += 'abcdefghjkmnpqrstuvwxyz'[Math.floor(Math.random() * 23)];
-  pass += 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random() * 23)];
-  pass += '23456789'[Math.floor(Math.random() * 8)];
-  pass += '!@#$%^&*'[Math.floor(Math.random() * 8)];
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghjkmnpqrstuvwxyz';
+  const digits = '23456789';
+  const all = upper + lower + digits;
+
+  const result = [
+    upper[Math.floor(Math.random() * upper.length)],
+    lower[Math.floor(Math.random() * lower.length)],
+    digits[Math.floor(Math.random() * digits.length)],
+    lower[Math.floor(Math.random() * lower.length)]
+  ];
 
   for (let i = 4; i < length; i++) {
-    pass += chars[Math.floor(Math.random() * chars.length)];
+    result.push(all[Math.floor(Math.random() * all.length)]);
   }
-  return pass.split('').sort(() => 0.5 - Math.random()).join('');
+
+  // Modern Fisher-Yates shuffle for uniform distribution
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+
+  return result.join('');
 }
 
 /**
@@ -1213,6 +1256,12 @@ if (!BOT_TOKEN) {
 
 export const bot = new Telegraf(BOT_TOKEN);
 
+// Global Error Handler to prevent silent crashes and unhandled promise rejections
+bot.catch((err, ctx) => {
+  console.error(`❌ Bot error on ${ctx?.updateType || 'unknown'}:`, err);
+  ctx?.reply('⚠️ خطایی در ارتباط رخ داد. لطفاً با دستور /reset یا /start مجدداً تلاش فرمایید.').catch(() => {});
+});
+
 /**
  * Registers Bot commands in Telegram Menu
  */
@@ -1515,11 +1564,14 @@ bot.on('text', async (ctx) => {
       let pass = '';
 
       if (parts.length === 2) {
-        pass = parts[1].trim();
-      } else if (parts.length === 4) {
+        pass = parts.slice(1).join(':').trim();
+      } else if (parts.length === 3) {
+        port = parseInt(parts[1], 10) || 22;
+        pass = parts.slice(2).join(':').trim();
+      } else {
         port = parseInt(parts[1], 10) || 22;
         user = parts[2].trim() || 'root';
-        pass = parts[3].trim();
+        pass = parts.slice(3).join(':').trim();
       }
 
       const adminPass = generateStrongPassword(16);
@@ -1781,6 +1833,12 @@ bot.on('text', async (ctx) => {
 
       resetSession(chatId, 'IDLE');
 
+      const keyboard = [];
+      if (repairRes.panelUrl && repairRes.panelUrl.startsWith('http')) {
+        keyboard.push([{ text: '🌐 باز کردن مستقیم آدرس پنل', url: repairRes.panelUrl }]);
+      }
+      keyboard.push([{ text: '📊 مشاهده وضعیت سرورها', callback_data: 'menu:status' }]);
+
       return ctx.telegram.editMessageText(
         chatId,
         progressMsg.message_id,
@@ -1788,30 +1846,40 @@ bot.on('text', async (ctx) => {
         renderRepairCard({ panelUrl: repairRes.panelUrl, ip: vpsIp }),
         {
           parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🌐 باز کردن مستقیم آدرس پنل', url: repairRes.panelUrl }],
-              [{ text: '📊 مشاهده وضعیت سرورها', callback_data: 'menu:status' }]
-            ]
-          }
+          reply_markup: { inline_keyboard: keyboard }
         }
-      );
+      ).catch(() => {
+        return ctx.telegram.editMessageText(
+          chatId,
+          progressMsg.message_id,
+          undefined,
+          renderRepairCard({ panelUrl: repairRes.panelUrl, ip: vpsIp }).replace(/[*_`]/g, ''),
+          { reply_markup: { inline_keyboard: keyboard } }
+        );
+      });
     } catch (err) {
+      const errText = `❌ **عملیات عیب‌یابی و تعمیر متوقف شد:**\n\`${err.message}\`\n\nلطفاً از صحت رمز عبور root و باز بودن پورت ۲۲ سرور اطمینان حاصل نمایید.`;
+      const errButtons = {
+        inline_keyboard: [
+          [{ text: '🔄 تلاش مجدد', callback_data: 'menu:repair' }],
+          [{ text: '❌ انصراف', callback_data: 'cancel' }]
+        ]
+      };
       return ctx.telegram.editMessageText(
         chatId,
         progressMsg.message_id,
         undefined,
-        `❌ **عملیات عیب‌یابی و تعمیر متوقف شد:**\n\`${err.message}\`\n\nلطفاً از صحت رمز عبور root و باز بودن پورت ۲۲ سرور اطمینان حاصل نمایید.`,
-        {
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🔄 تلاش مجدد', callback_data: 'menu:repair' }],
-              [{ text: '❌ انصراف', callback_data: 'cancel' }]
-            ]
-          }
-        }
-      );
+        errText,
+        { parse_mode: 'Markdown', reply_markup: errButtons }
+      ).catch(() => {
+        return ctx.telegram.editMessageText(
+          chatId,
+          progressMsg.message_id,
+          undefined,
+          errText.replace(/[*_`]/g, ''),
+          { reply_markup: errButtons }
+        );
+      });
     }
   }
 
@@ -2034,7 +2102,7 @@ bot.action(/uninst_srv:(.+):(.+)/, (ctx) => {
   const domain = ctx.match[1];
   const ip = ctx.match[2];
 
-  saveSession(chatId, { uninstDomain: domain, uninstIp: ip, step: 'AWAITING_UNINSTALL_PASS' });
+  saveSession(chatId, { uninstDomain: domain, uninstIp: ip, domain, vpsIp: ip, step: 'AWAITING_UNINSTALL_PASS' });
 
   return ctx.editMessageText(
     `⚠️ **هشدار حذف کامل پنل:**\n• دامنه: \`${domain}\`\n• آی‌پی سرور: \`${ip}\`\n\nبا این عملیات تمام باینری‌های WhiteDNS، دیتابیس کاربران و سرویس‌های مربوطه از سرور پاک خواهند شد.\n\n🔑 لطفاً **رمز عبور root سرور** را ارسال نمایید تا ربات فرآیند حذف را شروع کند:\n_(پیام رمز عبور شما فوراً حذف خواهد شد)_`,
@@ -2095,7 +2163,7 @@ bot.action(/repair_srv:(.+):(.+)/, (ctx) => {
   const domain = ctx.match[1];
   const ip = ctx.match[2];
 
-  saveSession(chatId, { repairDomain: domain, repairIp: ip, step: 'AWAITING_REPAIR_PASS' });
+  saveSession(chatId, { repairDomain: domain, repairIp: ip, domain, vpsIp: ip, step: 'AWAITING_REPAIR_PASS' });
 
   return ctx.editMessageText(
     `🛠 **آماده‌سازی عیب‌یابی و خودترمیمی سرور:**\n• دامنه: \`${domain}\`\n• آی‌پی سرور: \`${ip}\`\n\nربات به سرور متصل شده، تداخل‌های پورت ۵۳، سرویس‌های داون، گواهی SSL و وب‌سرور را به‌طور کامل تعمیر خواهد کرد.\n\n🔑 لطفاً **رمز عبور root سرور** را ارسال فرمایید:\n_(پیام رمز عبور شما بلافاصله پس از دریافت حذف خواهد شد)_`,
@@ -2498,6 +2566,13 @@ bot.action(/cf_add_proxy:([01])/, async (ctx) => {
   const zoneId = session?.zoneId || st.zoneId;
   const domain = session?.domain || st.domain;
 
+  if (!session?.cfToken || !zoneId || !st.type || !st.name || !st.content) {
+    return ctx.editMessageText(
+      '⚠️ اطلاعات رکورد منقضی شده است. لطفاً مجدداً از منوی /dns اقدام فرمایید.',
+      Markup.inlineKeyboard([[Markup.button.callback('🔙 بازگشت به لیست رکوردها', 'cf_dns')]])
+    );
+  }
+
   await ctx.editMessageText('⏳ در حال ثبت رکورد در کلودفلر...');
 
   const createRes = await createDnsRecord(session.cfToken, zoneId, {
@@ -2799,30 +2874,57 @@ bot.action('deploy', async (ctx) => {
     saveSession(chatId, { step: 'COMPLETED' });
 
     // Send final card with the REAL access URL (containing random path!)
+    const completionCardText = renderCompletionCard({
+      panelUrl: result.panelUrl,
+      adminUser: 'admin',
+      adminPass,
+      domain,
+      publicIp: vpsIp,
+      version: result.version
+    });
+
+    const completionKeyboard = [];
+    if (result.panelUrl && result.panelUrl.startsWith('http')) {
+      completionKeyboard.push([{ text: '🌐 ورود به پنل WhiteDNS', url: result.panelUrl }]);
+    }
+    completionKeyboard.push([{ text: '📊 مشاهده وضعیت سرورها', callback_data: 'menu:status' }]);
+
     await ctx.telegram.editMessageText(
       chatId,
       progressMsg.message_id,
       undefined,
-      renderCompletionCard({
-        panelUrl: result.panelUrl,
-        adminUser: 'admin',
-        adminPass,
-        domain,
-        publicIp: vpsIp,
-        version: result.version
-      }),
-      { parse_mode: 'Markdown' }
-    );
+      completionCardText,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: completionKeyboard }
+      }
+    ).catch(async () => {
+      await ctx.telegram.editMessageText(
+        chatId,
+        progressMsg.message_id,
+        undefined,
+        completionCardText.replace(/[*_`]/g, ''),
+        { reply_markup: { inline_keyboard: completionKeyboard } }
+      ).catch(() => {});
+    });
 
   } catch (err) {
     console.error('Installation error:', err);
+    const errCard = renderErrorCard(err.message);
     await ctx.telegram.editMessageText(
       chatId,
       progressMsg.message_id,
       undefined,
-      renderErrorCard(err.message),
+      errCard,
       { parse_mode: 'Markdown' }
-    );
+    ).catch(async () => {
+      await ctx.telegram.editMessageText(
+        chatId,
+        progressMsg.message_id,
+        undefined,
+        errCard.replace(/[*_`]/g, '')
+      ).catch(() => {});
+    });
   }
 });
 
@@ -2980,18 +3082,26 @@ esac
 [[ -n "$PANEL_DOMAIN" ]] || die "PANEL_DOMAIN is missing."
 [[ -n "$ADMIN_PASS" ]] || die "ADMIN_PASS is missing."
 
-# Detect public IP if not supplied
+# Detect public IP if not supplied (multi-source fallback)
 if [[ -z "$PUBLIC_IP" ]]; then
-  PUBLIC_IP=$(curl -4s --connect-timeout 5 https://api.ipify.org || ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i=="src"){print $(i+1);exit}}')
+  PUBLIC_IP=$(curl -4s --connect-timeout 3 https://api.ipify.org 2>/dev/null || \
+              curl -4s --connect-timeout 3 https://icanhazip.com 2>/dev/null || \
+              curl -4s --connect-timeout 3 https://ifconfig.me 2>/dev/null || \
+              ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i=="src"){print $(i+1);exit}}' || \
+              hostname -I 2>/dev/null | awk '{print $1}')
 fi
+PUBLIC_IP=$(echo "$PUBLIC_IP" | tr -d ' \n\r')
 [[ -n "$PUBLIC_IP" ]] || die "Could not determine PUBLIC_IP."
 
-# Fix systemd-resolved conflict on port 53 (common on Ubuntu)
+# Fix systemd-resolved conflict on port 53 (common on Ubuntu/Debian)
 if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-  if grep -qE '^#?DNSStubListener=yes' /etc/systemd/resolved.conf; then
+  if grep -qE '^#?DNSStubListener=' /etc/systemd/resolved.conf 2>/dev/null; then
     sed -i 's/^#\?DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf
-    systemctl restart systemd-resolved 2>/dev/null || true
+  else
+    mkdir -p /etc/systemd/resolved.conf.d
+    echo -e "[Resolve]\nDNSStubListener=no" > /etc/systemd/resolved.conf.d/no-stub.conf
   fi
+  systemctl restart systemd-resolved 2>/dev/null || true
 fi
 
 # Crucial: Ensure upstream DNS resolver is active and never loops back to dead 127.0.0.53
@@ -3001,12 +3111,12 @@ UPSTREAM_NS=$(printf "%s %s" "$EXISTING_NS" "$RESOLVE_NS" | tr ' ' '\n' | sort -
 
 rm -f /etc/resolv.conf
 {
-  echo "nameserver 1.1.1.1"
-  echo "nameserver 8.8.8.8"
-  echo "nameserver 9.9.9.9"
   for ns in $UPSTREAM_NS; do
     echo "nameserver $ns"
   done
+  echo "nameserver 1.1.1.1"
+  echo "nameserver 8.8.8.8"
+  echo "nameserver 9.9.9.9"
   echo "options timeout:2 attempts:3"
 } > /etc/resolv.conf
 
@@ -3509,22 +3619,25 @@ report_progress "1" "success" "DNS resolution confirmed operational."
 report_progress "2" "in_progress" "Inspecting and clearing port 53 DNS listener..."
 
 if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-  if grep -qE '^#?DNSStubListener=yes' /etc/systemd/resolved.conf 2>/dev/null; then
+  if grep -qE '^#?DNSStubListener=' /etc/systemd/resolved.conf 2>/dev/null; then
     sed -i 's/^#\?DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf
-    systemctl restart systemd-resolved 2>/dev/null || true
+  else
+    mkdir -p /etc/systemd/resolved.conf.d
+    echo -e "[Resolve]\nDNSStubListener=no" > /etc/systemd/resolved.conf.d/no-stub.conf
   fi
+  systemctl restart systemd-resolved 2>/dev/null || true
 fi
 
 EXISTING_NS=$(grep -E '^[[:space:]]*nameserver[[:space:]]+' /etc/resolv.conf 2>/dev/null | grep -v '127\.0\.0\.' | awk '{print $2}' | tr '\n' ' ' || true)
 
 rm -f /etc/resolv.conf
 {
-  echo "nameserver 1.1.1.1"
-  echo "nameserver 8.8.8.8"
-  echo "nameserver 9.9.9.9"
   for ns in $EXISTING_NS; do
     echo "nameserver $ns"
   done
+  echo "nameserver 1.1.1.1"
+  echo "nameserver 8.8.8.8"
+  echo "nameserver 9.9.9.9"
   echo "options timeout:2 attempts:3"
 } > /etc/resolv.conf
 

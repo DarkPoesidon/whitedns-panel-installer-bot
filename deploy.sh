@@ -119,7 +119,7 @@ echo -e "${GREEN}[OK] Environment file (.env) configured.${NC}"
 echo -e "${BLUE}[4/5] Installing npm dependencies (npm install)...${NC}"
 npm install --omit=dev
 
-chmod +x "$INSTALL_DIR/scripts/install-soar.sh" "$INSTALL_DIR/scripts/uninstall-soar.sh" 2>/dev/null || true
+chmod +x "$INSTALL_DIR/scripts/install-soar.sh" "$INSTALL_DIR/scripts/repair-soar.sh" "$INSTALL_DIR/scripts/uninstall-soar.sh" 2>/dev/null || true
 chmod +x "$INSTALL_DIR/menu.sh" "$INSTALL_DIR/update.sh" "$INSTALL_DIR/uninstall.sh" 2>/dev/null || true
 cat > /usr/bin/whitedns-bot <<'EOF_BIN'
 #!/usr/bin/env bash

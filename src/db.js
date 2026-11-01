@@ -24,6 +24,10 @@ db.exec(`
     vps_user TEXT DEFAULT 'root',
     vps_pass TEXT,
     admin_pass TEXT,
+    repair_ip TEXT,
+    repair_domain TEXT,
+    uninst_ip TEXT,
+    uninst_domain TEXT,
     updated_at INTEGER DEFAULT (strftime('%s', 'now'))
   );
 
@@ -38,6 +42,12 @@ db.exec(`
   );
 `);
 
+// Migration guards for existing databases
+try { db.exec('ALTER TABLE sessions ADD COLUMN repair_ip TEXT'); } catch (e) {}
+try { db.exec('ALTER TABLE sessions ADD COLUMN repair_domain TEXT'); } catch (e) {}
+try { db.exec('ALTER TABLE sessions ADD COLUMN uninst_ip TEXT'); } catch (e) {}
+try { db.exec('ALTER TABLE sessions ADD COLUMN uninst_domain TEXT'); } catch (e) {}
+
 export function getSession(chatId) {
   const row = db.prepare('SELECT * FROM sessions WHERE chat_id = ?').get(chatId);
   if (!row) return null;
@@ -51,7 +61,11 @@ export function getSession(chatId) {
     vpsPort: row.vps_port,
     vpsUser: row.vps_user,
     vpsPass: row.vps_pass,
-    adminPass: row.admin_pass
+    adminPass: row.admin_pass,
+    repairIp: row.repair_ip,
+    repairDomain: row.repair_domain,
+    uninstIp: row.uninst_ip,
+    uninstDomain: row.uninst_domain
   };
 }
 
@@ -59,8 +73,8 @@ export function saveSession(chatId, fields) {
   const existing = getSession(chatId);
   if (!existing) {
     db.prepare(`
-      INSERT INTO sessions (chat_id, step, cf_token, zone_id, domain, vps_ip, vps_port, vps_user, vps_pass, admin_pass, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+      INSERT INTO sessions (chat_id, step, cf_token, zone_id, domain, vps_ip, vps_port, vps_user, vps_pass, admin_pass, repair_ip, repair_domain, uninst_ip, uninst_domain, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
     `).run(
       chatId,
       fields.step || 'IDLE',
@@ -71,7 +85,11 @@ export function saveSession(chatId, fields) {
       fields.vpsPort || 22,
       fields.vpsUser || 'root',
       fields.vpsPass || null,
-      fields.adminPass || null
+      fields.adminPass || null,
+      fields.repairIp || null,
+      fields.repairDomain || null,
+      fields.uninstIp || null,
+      fields.uninstDomain || null
     );
   } else {
     const updated = { ...existing, ...fields };
@@ -86,6 +104,10 @@ export function saveSession(chatId, fields) {
         vps_user = ?,
         vps_pass = ?,
         admin_pass = ?,
+        repair_ip = ?,
+        repair_domain = ?,
+        uninst_ip = ?,
+        uninst_domain = ?,
         updated_at = strftime('%s', 'now')
       WHERE chat_id = ?
     `).run(
@@ -98,6 +120,10 @@ export function saveSession(chatId, fields) {
       updated.vpsUser,
       updated.vpsPass,
       updated.adminPass,
+      updated.repairIp || null,
+      updated.repairDomain || null,
+      updated.uninstIp || null,
+      updated.uninstDomain || null,
       chatId
     );
   }
@@ -105,8 +131,8 @@ export function saveSession(chatId, fields) {
 
 export function resetSession(chatId, initialStep = 'AWAITING_CF_EMAIL') {
   db.prepare(`
-    INSERT INTO sessions (chat_id, step, cf_token, zone_id, domain, vps_ip, vps_port, vps_user, vps_pass, admin_pass, updated_at)
-    VALUES (?, ?, NULL, NULL, NULL, NULL, 22, 'root', NULL, NULL, strftime('%s', 'now'))
+    INSERT INTO sessions (chat_id, step, cf_token, zone_id, domain, vps_ip, vps_port, vps_user, vps_pass, admin_pass, repair_ip, repair_domain, uninst_ip, uninst_domain, updated_at)
+    VALUES (?, ?, NULL, NULL, NULL, NULL, 22, 'root', NULL, NULL, NULL, NULL, NULL, NULL, strftime('%s', 'now'))
     ON CONFLICT(chat_id) DO UPDATE SET
       step = ?,
       cf_token = NULL,
@@ -117,6 +143,10 @@ export function resetSession(chatId, initialStep = 'AWAITING_CF_EMAIL') {
       vps_user = 'root',
       vps_pass = NULL,
       admin_pass = NULL,
+      repair_ip = NULL,
+      repair_domain = NULL,
+      uninst_ip = NULL,
+      uninst_domain = NULL,
       updated_at = strftime('%s', 'now')
   `).run(chatId, initialStep, initialStep);
 }

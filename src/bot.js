@@ -34,6 +34,12 @@ if (!BOT_TOKEN) {
 
 export const bot = new Telegraf(BOT_TOKEN);
 
+// Global Error Handler to prevent silent crashes and unhandled promise rejections
+bot.catch((err, ctx) => {
+  console.error(`❌ Bot error on ${ctx?.updateType || 'unknown'}:`, err);
+  ctx?.reply('⚠️ خطایی در ارتباط رخ داد. لطفاً با دستور /reset یا /start مجدداً تلاش فرمایید.').catch(() => {});
+});
+
 /**
  * Registers Bot commands in Telegram Menu
  */
@@ -336,11 +342,14 @@ bot.on('text', async (ctx) => {
       let pass = '';
 
       if (parts.length === 2) {
-        pass = parts[1].trim();
-      } else if (parts.length === 4) {
+        pass = parts.slice(1).join(':').trim();
+      } else if (parts.length === 3) {
+        port = parseInt(parts[1], 10) || 22;
+        pass = parts.slice(2).join(':').trim();
+      } else {
         port = parseInt(parts[1], 10) || 22;
         user = parts[2].trim() || 'root';
-        pass = parts[3].trim();
+        pass = parts.slice(3).join(':').trim();
       }
 
       const adminPass = generateStrongPassword(16);
@@ -602,6 +611,12 @@ bot.on('text', async (ctx) => {
 
       resetSession(chatId, 'IDLE');
 
+      const keyboard = [];
+      if (repairRes.panelUrl && repairRes.panelUrl.startsWith('http')) {
+        keyboard.push([{ text: '🌐 باز کردن مستقیم آدرس پنل', url: repairRes.panelUrl }]);
+      }
+      keyboard.push([{ text: '📊 مشاهده وضعیت سرورها', callback_data: 'menu:status' }]);
+
       return ctx.telegram.editMessageText(
         chatId,
         progressMsg.message_id,
@@ -609,30 +624,40 @@ bot.on('text', async (ctx) => {
         renderRepairCard({ panelUrl: repairRes.panelUrl, ip: vpsIp }),
         {
           parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🌐 باز کردن مستقیم آدرس پنل', url: repairRes.panelUrl }],
-              [{ text: '📊 مشاهده وضعیت سرورها', callback_data: 'menu:status' }]
-            ]
-          }
+          reply_markup: { inline_keyboard: keyboard }
         }
-      );
+      ).catch(() => {
+        return ctx.telegram.editMessageText(
+          chatId,
+          progressMsg.message_id,
+          undefined,
+          renderRepairCard({ panelUrl: repairRes.panelUrl, ip: vpsIp }).replace(/[*_`]/g, ''),
+          { reply_markup: { inline_keyboard: keyboard } }
+        );
+      });
     } catch (err) {
+      const errText = `❌ **عملیات عیب‌یابی و تعمیر متوقف شد:**\n\`${err.message}\`\n\nلطفاً از صحت رمز عبور root و باز بودن پورت ۲۲ سرور اطمینان حاصل نمایید.`;
+      const errButtons = {
+        inline_keyboard: [
+          [{ text: '🔄 تلاش مجدد', callback_data: 'menu:repair' }],
+          [{ text: '❌ انصراف', callback_data: 'cancel' }]
+        ]
+      };
       return ctx.telegram.editMessageText(
         chatId,
         progressMsg.message_id,
         undefined,
-        `❌ **عملیات عیب‌یابی و تعمیر متوقف شد:**\n\`${err.message}\`\n\nلطفاً از صحت رمز عبور root و باز بودن پورت ۲۲ سرور اطمینان حاصل نمایید.`,
-        {
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🔄 تلاش مجدد', callback_data: 'menu:repair' }],
-              [{ text: '❌ انصراف', callback_data: 'cancel' }]
-            ]
-          }
-        }
-      );
+        errText,
+        { parse_mode: 'Markdown', reply_markup: errButtons }
+      ).catch(() => {
+        return ctx.telegram.editMessageText(
+          chatId,
+          progressMsg.message_id,
+          undefined,
+          errText.replace(/[*_`]/g, ''),
+          { reply_markup: errButtons }
+        );
+      });
     }
   }
 
@@ -855,7 +880,7 @@ bot.action(/uninst_srv:(.+):(.+)/, (ctx) => {
   const domain = ctx.match[1];
   const ip = ctx.match[2];
 
-  saveSession(chatId, { uninstDomain: domain, uninstIp: ip, step: 'AWAITING_UNINSTALL_PASS' });
+  saveSession(chatId, { uninstDomain: domain, uninstIp: ip, domain, vpsIp: ip, step: 'AWAITING_UNINSTALL_PASS' });
 
   return ctx.editMessageText(
     `⚠️ **هشدار حذف کامل پنل:**\n• دامنه: \`${domain}\`\n• آی‌پی سرور: \`${ip}\`\n\nبا این عملیات تمام باینری‌های WhiteDNS، دیتابیس کاربران و سرویس‌های مربوطه از سرور پاک خواهند شد.\n\n🔑 لطفاً **رمز عبور root سرور** را ارسال نمایید تا ربات فرآیند حذف را شروع کند:\n_(پیام رمز عبور شما فوراً حذف خواهد شد)_`,
@@ -916,7 +941,7 @@ bot.action(/repair_srv:(.+):(.+)/, (ctx) => {
   const domain = ctx.match[1];
   const ip = ctx.match[2];
 
-  saveSession(chatId, { repairDomain: domain, repairIp: ip, step: 'AWAITING_REPAIR_PASS' });
+  saveSession(chatId, { repairDomain: domain, repairIp: ip, domain, vpsIp: ip, step: 'AWAITING_REPAIR_PASS' });
 
   return ctx.editMessageText(
     `🛠 **آماده‌سازی عیب‌یابی و خودترمیمی سرور:**\n• دامنه: \`${domain}\`\n• آی‌پی سرور: \`${ip}\`\n\nربات به سرور متصل شده، تداخل‌های پورت ۵۳، سرویس‌های داون، گواهی SSL و وب‌سرور را به‌طور کامل تعمیر خواهد کرد.\n\n🔑 لطفاً **رمز عبور root سرور** را ارسال فرمایید:\n_(پیام رمز عبور شما بلافاصله پس از دریافت حذف خواهد شد)_`,
@@ -1319,6 +1344,13 @@ bot.action(/cf_add_proxy:([01])/, async (ctx) => {
   const zoneId = session?.zoneId || st.zoneId;
   const domain = session?.domain || st.domain;
 
+  if (!session?.cfToken || !zoneId || !st.type || !st.name || !st.content) {
+    return ctx.editMessageText(
+      '⚠️ اطلاعات رکورد منقضی شده است. لطفاً مجدداً از منوی /dns اقدام فرمایید.',
+      Markup.inlineKeyboard([[Markup.button.callback('🔙 بازگشت به لیست رکوردها', 'cf_dns')]])
+    );
+  }
+
   await ctx.editMessageText('⏳ در حال ثبت رکورد در کلودفلر...');
 
   const createRes = await createDnsRecord(session.cfToken, zoneId, {
@@ -1620,30 +1652,57 @@ bot.action('deploy', async (ctx) => {
     saveSession(chatId, { step: 'COMPLETED' });
 
     // Send final card with the REAL access URL (containing random path!)
+    const completionCardText = renderCompletionCard({
+      panelUrl: result.panelUrl,
+      adminUser: 'admin',
+      adminPass,
+      domain,
+      publicIp: vpsIp,
+      version: result.version
+    });
+
+    const completionKeyboard = [];
+    if (result.panelUrl && result.panelUrl.startsWith('http')) {
+      completionKeyboard.push([{ text: '🌐 ورود به پنل WhiteDNS', url: result.panelUrl }]);
+    }
+    completionKeyboard.push([{ text: '📊 مشاهده وضعیت سرورها', callback_data: 'menu:status' }]);
+
     await ctx.telegram.editMessageText(
       chatId,
       progressMsg.message_id,
       undefined,
-      renderCompletionCard({
-        panelUrl: result.panelUrl,
-        adminUser: 'admin',
-        adminPass,
-        domain,
-        publicIp: vpsIp,
-        version: result.version
-      }),
-      { parse_mode: 'Markdown' }
-    );
+      completionCardText,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: completionKeyboard }
+      }
+    ).catch(async () => {
+      await ctx.telegram.editMessageText(
+        chatId,
+        progressMsg.message_id,
+        undefined,
+        completionCardText.replace(/[*_`]/g, ''),
+        { reply_markup: { inline_keyboard: completionKeyboard } }
+      ).catch(() => {});
+    });
 
   } catch (err) {
     console.error('Installation error:', err);
+    const errCard = renderErrorCard(err.message);
     await ctx.telegram.editMessageText(
       chatId,
       progressMsg.message_id,
       undefined,
-      renderErrorCard(err.message),
+      errCard,
       { parse_mode: 'Markdown' }
-    );
+    ).catch(async () => {
+      await ctx.telegram.editMessageText(
+        chatId,
+        progressMsg.message_id,
+        undefined,
+        errCard.replace(/[*_`]/g, '')
+      ).catch(() => {});
+    });
   }
 });
 

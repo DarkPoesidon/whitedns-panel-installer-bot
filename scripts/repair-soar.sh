@@ -46,22 +46,25 @@ report_progress "1" "success" "DNS resolution confirmed operational."
 report_progress "2" "in_progress" "Inspecting and clearing port 53 DNS listener..."
 
 if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-  if grep -qE '^#?DNSStubListener=yes' /etc/systemd/resolved.conf 2>/dev/null; then
+  if grep -qE '^#?DNSStubListener=' /etc/systemd/resolved.conf 2>/dev/null; then
     sed -i 's/^#\?DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf
-    systemctl restart systemd-resolved 2>/dev/null || true
+  else
+    mkdir -p /etc/systemd/resolved.conf.d
+    echo -e "[Resolve]\nDNSStubListener=no" > /etc/systemd/resolved.conf.d/no-stub.conf
   fi
+  systemctl restart systemd-resolved 2>/dev/null || true
 fi
 
 EXISTING_NS=$(grep -E '^[[:space:]]*nameserver[[:space:]]+' /etc/resolv.conf 2>/dev/null | grep -v '127\.0\.0\.' | awk '{print $2}' | tr '\n' ' ' || true)
 
 rm -f /etc/resolv.conf
 {
-  echo "nameserver 1.1.1.1"
-  echo "nameserver 8.8.8.8"
-  echo "nameserver 9.9.9.9"
   for ns in $EXISTING_NS; do
     echo "nameserver $ns"
   done
+  echo "nameserver 1.1.1.1"
+  echo "nameserver 8.8.8.8"
+  echo "nameserver 9.9.9.9"
   echo "options timeout:2 attempts:3"
 } > /etc/resolv.conf
 

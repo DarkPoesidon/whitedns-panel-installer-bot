@@ -3120,6 +3120,17 @@ rm -f /etc/resolv.conf
   echo "options timeout:2 attempts:3"
 } > /etc/resolv.conf
 
+# Verify DNS resolution works; fallback to direct public DNS if host upstream failed
+if ! curl -4s --connect-timeout 3 https://api.ipify.org >/dev/null 2>&1; then
+  cat > /etc/resolv.conf <<EOF_DNS
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+nameserver 9.9.9.9
+nameserver 208.67.222.222
+options timeout:2 attempts:3
+EOF_DNS
+fi
+
 report_progress "1" "success" "Server verified: $ID $VERSION_ID ($BUNDLE_ARCH), IP: $PUBLIC_IP"
 
 # ------------------------------------------------------------------------------
@@ -3149,69 +3160,95 @@ rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /va
 # Fix any partially configured packages safely with generous timeout and non-interactive flags
 DEBIAN_FRONTEND=noninteractive timeout 60s dpkg --configure -a --force-confdef --force-confold 2>/dev/null || true
 
-# Ensure universe repository is enabled on Ubuntu (handles both traditional and deb822 formats)
+# Ensure universe and multiverse repositories are enabled on Ubuntu
 if [[ "$ID" == "ubuntu" ]]; then
-  UNIVERSE_FOUND=0
-
-  # Check deb822 format first (Ubuntu 24.04+): /etc/apt/sources.list.d/ubuntu.sources
+  # 1. Update deb822 format (/etc/apt/sources.list.d/ubuntu.sources)
   if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
-    if grep -q 'universe' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null; then
-      UNIVERSE_FOUND=1
-    else
-      # Add universe to Components line in deb822 format
-      sed -i '/^Components:/ s/$/ universe/' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
-    fi
+    sed -i -E '/^Components:/ { /universe/! s/$/ universe/ }' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+    sed -i -E '/^Components:/ { /multiverse/! s/$/ multiverse/ }' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
   fi
 
-  # Check traditional format (Ubuntu 22.04): /etc/apt/sources.list
-  if [[ $UNIVERSE_FOUND -eq 0 && -f /etc/apt/sources.list ]] && grep -qE '^deb ' /etc/apt/sources.list 2>/dev/null; then
-    if grep -qE '^deb .* universe' /etc/apt/sources.list 2>/dev/null; then
-      UNIVERSE_FOUND=1
-    else
-      sed -i '/^deb /{/universe/!{s/main/main universe/}}' /etc/apt/sources.list 2>/dev/null || true
-    fi
+  # 2. Update traditional format (/etc/apt/sources.list)
+  if [[ -f /etc/apt/sources.list ]]; then
+    sed -i -E '/^deb .*main/ { /universe/! s/main/main universe multiverse/ }' /etc/apt/sources.list 2>/dev/null || true
   fi
 
-  # Fallback: use add-apt-repository if available
-  if [[ $UNIVERSE_FOUND -eq 0 ]]; then
-    command -v add-apt-repository >/dev/null 2>&1 && add-apt-repository -y universe 2>/dev/null || true
+  # 3. If add-apt-repository is available, use it as well
+  command -v add-apt-repository >/dev/null 2>&1 && add-apt-repository -y universe 2>/dev/null || true
+
+  # 4. Explicit fallback sources file for official Ubuntu repositories
+  UBUNTU_CODENAME="${VERSION_CODENAME:-}"
+  [[ -n "$UBUNTU_CODENAME" ]] || UBUNTU_CODENAME=$(lsb_release -cs 2>/dev/null || echo "")
+  if [[ -n "$UBUNTU_CODENAME" ]]; then
+    cat > /etc/apt/sources.list.d/whitedns-official.list <<EOF_UBUNTU_SOURCES
+deb http://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME} main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-updates main restricted universe multiverse
+deb http://security.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-security main restricted universe multiverse
+EOF_UBUNTU_SOURCES
+  fi
+elif [[ "$ID" == "debian" ]]; then
+  if [[ -f /etc/apt/sources.list ]]; then
+    sed -i -E '/^deb .*main/ { /contrib/! s/main/main contrib non-free non-free-firmware/ }' /etc/apt/sources.list 2>/dev/null || true
+  fi
+  DEBIAN_CODENAME="${VERSION_CODENAME:-}"
+  [[ -n "$DEBIAN_CODENAME" ]] || DEBIAN_CODENAME=$(lsb_release -cs 2>/dev/null || echo "")
+  if [[ -n "$DEBIAN_CODENAME" ]]; then
+    cat > /etc/apt/sources.list.d/whitedns-official.list <<EOF_DEBIAN_SOURCES
+deb http://deb.debian.org/debian ${DEBIAN_CODENAME} main contrib non-free
+deb http://deb.debian.org/debian-security ${DEBIAN_CODENAME}-security main contrib non-free
+deb http://deb.debian.org/debian ${DEBIAN_CODENAME}-updates main contrib non-free
+EOF_DEBIAN_SOURCES
   fi
 fi
 
 report_progress "2" "in_progress" "Updating package lists..."
 
 APT_LOG=$(mktemp /tmp/whitedns-apt.XXXXXX)
-APT_FLAGS="-y -o DPkg::Lock::Timeout=60 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+APT_FLAGS="-y -o DPkg::Lock::Timeout=60 -o Acquire::Retries=3 -o Acquire::ForceIPv4=true -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
-# Run apt-get update (MUST run after enabling universe repo above)
+# Run apt-get update (with retry and log accumulation)
 apt-get update $APT_FLAGS >"$APT_LOG" 2>&1 || {
   rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock* /var/cache/apt/archives/lock 2>/dev/null || true
-  apt-get update $APT_FLAGS >"$APT_LOG" 2>&1 || true
+  apt-get update $APT_FLAGS >>"$APT_LOG" 2>&1 || true
 }
 
 report_progress "2" "in_progress" "Installing prerequisites (nginx, openssl, curl, tar)..."
 
 # Install core required packages (ca-certificates, curl, tar, openssl)
-apt-get install -y --no-install-recommends $APT_FLAGS ca-certificates curl tar openssl iproute2 >"$APT_LOG" 2>&1 || \
-apt-get install -y $APT_FLAGS ca-certificates curl tar openssl iproute2 >"$APT_LOG" 2>&1 || true
+apt-get install -y --no-install-recommends $APT_FLAGS ca-certificates curl tar openssl iproute2 >>"$APT_LOG" 2>&1 || \
+apt-get install -y $APT_FLAGS ca-certificates curl tar openssl iproute2 >>"$APT_LOG" 2>&1 || true
 
 # Install Nginx reverse proxy (try nginx meta-package, fallback to nginx-light or nginx-core)
 if ! command -v nginx >/dev/null 2>&1; then
-  apt-get install -y --no-install-recommends $APT_FLAGS nginx >"$APT_LOG" 2>&1 || \
-  apt-get install -y $APT_FLAGS nginx >"$APT_LOG" 2>&1 || \
-  apt-get install -y --no-install-recommends $APT_FLAGS nginx-light >"$APT_LOG" 2>&1 || \
-  apt-get install -y --no-install-recommends $APT_FLAGS nginx-core >"$APT_LOG" 2>&1 || true
+  apt-get install -y --no-install-recommends $APT_FLAGS nginx >>"$APT_LOG" 2>&1 || \
+  apt-get install -y $APT_FLAGS nginx >>"$APT_LOG" 2>&1 || \
+  apt-get install -y --no-install-recommends $APT_FLAGS nginx-light >>"$APT_LOG" 2>&1 || \
+  apt-get install -y --no-install-recommends $APT_FLAGS nginx-core >>"$APT_LOG" 2>&1 || true
+fi
+
+# Multi-tier fallback: if distro nginx packages still failed, install official Nginx from nginx.org upstream repository
+if ! command -v nginx >/dev/null 2>&1; then
+  report_progress "2" "in_progress" "Installing official Nginx from upstream repository..."
+  mkdir -p /usr/share/keyrings
+  curl -fsSL https://nginx.org/keys/nginx_signing.key 2>/dev/null | gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg 2>/dev/null || true
+  DISTRO_CODENAME="${VERSION_CODENAME:-}"
+  [[ -n "$DISTRO_CODENAME" ]] || DISTRO_CODENAME=$(lsb_release -cs 2>/dev/null || echo "")
+  if [[ -f /usr/share/keyrings/nginx-archive-keyring.gpg && -n "$DISTRO_CODENAME" ]]; then
+    echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/${ID} ${DISTRO_CODENAME} nginx" > /etc/apt/sources.list.d/nginx-official.list
+    apt-get update $APT_FLAGS >>"$APT_LOG" 2>&1 || true
+    apt-get install -y $APT_FLAGS nginx >>"$APT_LOG" 2>&1 || true
+  fi
 fi
 
 # Install Certbot (optional: openssl self-signed fallback exists in Step 6 if unavailable)
 if ! command -v certbot >/dev/null 2>&1; then
-  apt-get install -y --no-install-recommends $APT_FLAGS certbot >/dev/null 2>&1 || true
+  apt-get install -y --no-install-recommends $APT_FLAGS certbot >>"$APT_LOG" 2>&1 || true
 fi
 
 # Install optional utilities (bind9-dnsutils, ufw)
-apt-get install -y --no-install-recommends $APT_FLAGS bind9-dnsutils >/dev/null 2>&1 || \
-apt-get install -y --no-install-recommends $APT_FLAGS dnsutils >/dev/null 2>&1 || true
-apt-get install -y --no-install-recommends $APT_FLAGS ufw >/dev/null 2>&1 || true
+apt-get install -y --no-install-recommends $APT_FLAGS bind9-dnsutils >>"$APT_LOG" 2>&1 || \
+apt-get install -y --no-install-recommends $APT_FLAGS dnsutils >>"$APT_LOG" 2>&1 || true
+apt-get install -y --no-install-recommends $APT_FLAGS ufw >>"$APT_LOG" 2>&1 || true
 
 # Validate essential tools
 MISSING_TOOLS=()
@@ -3222,7 +3259,7 @@ for tool in curl tar openssl nginx; do
 done
 
 if [[ ${#MISSING_TOOLS[@]} -gt 0 ]]; then
-  APT_LAST_ERR=$(grep -iE '^(E:|error:|fatal:)' "$APT_LOG" 2>/dev/null | tail -n 2 | tr '\n' ' ' || true)
+  APT_LAST_ERR=$(grep -iE '^(E:|error:|fatal:)' "$APT_LOG" 2>/dev/null | tail -n 3 | tr '\n' ' ' || true)
   rm -f "$APT_LOG"
   die "Failed to install required tools (${MISSING_TOOLS[*]}). Error: ${APT_LAST_ERR:-check server repository status}"
 fi
@@ -3715,7 +3752,14 @@ report_progress "4" "success" "Firewall ports 53, 80 and 443 verified."
 # ------------------------------------------------------------------------------
 report_progress "5" "in_progress" "Verifying SSL certificate and Nginx reverse proxy..."
 
-which nginx >/dev/null 2>&1 || apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold nginx certbot openssl || true
+if ! command -v nginx >/dev/null 2>&1; then
+  APT_FLAGS="-y -o DPkg::Lock::Timeout=60 -o Acquire::Retries=3 -o Acquire::ForceIPv4=true -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+  apt-get update $APT_FLAGS >/dev/null 2>&1 || true
+  apt-get install -y --no-install-recommends $APT_FLAGS nginx >/dev/null 2>&1 || \
+  apt-get install -y $APT_FLAGS nginx >/dev/null 2>&1 || \
+  apt-get install -y --no-install-recommends $APT_FLAGS nginx-light >/dev/null 2>&1 || \
+  apt-get install -y --no-install-recommends $APT_FLAGS nginx-core >/dev/null 2>&1 || true
+fi
 
 CERT_FILE=""
 KEY_FILE=""

@@ -142,7 +142,14 @@ report_progress "4" "success" "Firewall ports 53, 80 and 443 verified."
 # ------------------------------------------------------------------------------
 report_progress "5" "in_progress" "Verifying SSL certificate and Nginx reverse proxy..."
 
-which nginx >/dev/null 2>&1 || apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold nginx certbot openssl || true
+if ! command -v nginx >/dev/null 2>&1; then
+  APT_FLAGS="-y -o DPkg::Lock::Timeout=60 -o Acquire::Retries=3 -o Acquire::ForceIPv4=true -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+  apt-get update $APT_FLAGS >/dev/null 2>&1 || true
+  apt-get install -y --no-install-recommends $APT_FLAGS nginx >/dev/null 2>&1 || \
+  apt-get install -y $APT_FLAGS nginx >/dev/null 2>&1 || \
+  apt-get install -y --no-install-recommends $APT_FLAGS nginx-light >/dev/null 2>&1 || \
+  apt-get install -y --no-install-recommends $APT_FLAGS nginx-core >/dev/null 2>&1 || true
+fi
 
 CERT_FILE=""
 KEY_FILE=""

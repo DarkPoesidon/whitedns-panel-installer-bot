@@ -124,6 +124,7 @@ const WARNINGS = {
   DNS_NOT_READY: 'رکورد دامنهٔ پنل هنوز به این سرور نمی‌رسد و HTTPS فعال نشد. چند دقیقهٔ دیگر /repair را بزنید.',
   HTTPS_PORTS_BUSY: 'پورت ۸۰ یا ۴۴۳ در اختیار سرویس دیگری است و HTTPS فعال نشد.',
   CERT_FAILED: 'گواهی HTTPS صادر نشد. پورت‌های ۸۰ و ۴۴۳ را در فایروال پرووایدر بررسی کنید و با /repair دوباره تلاش کنید.',
+  CERT_STALLED: `گواهی دوم پنل (ECDSA) از Let's Encrypt نرسید و HTTPS برگردانده شد. معمولاً علت این است که برای همین نام در هفتهٔ اخیر چند گواهی صادر شده است؛ مثلاً با چند بار نصب و حذف. چند ساعت یا چند روز بعد با /repair دوباره تلاش کنید.`,
   CHECK_TOOL_MISSING: 'ابزار تست تانل پیدا نشد و تانل آزمایش نشد.',
   PROBE_FAILED: 'حساب تست ساخته نشد و تانل آزمایش نشد.',
   TUNNEL_LOCAL_FAILED: 'تست محلی تانل Soar موفق نبود. دسترسی سرور به اینترنت را بررسی کنید.',
@@ -140,7 +141,7 @@ const STAGES = [
   ['deps', 'نصب ابزارهای لازم'],
   ['fetch', 'دریافت و بررسی هش باندل رسمی'],
   ['activate', 'نصب و راه‌اندازی سرویس‌های پنل'],
-  ['https', 'فعال‌سازی HTTPS پنل'],
+  ['https', 'فعال‌سازی HTTPS پنل (تا ۷ دقیقه)'],
   ['verify', 'آزمایش واقعی تانل'],
 ];
 
@@ -155,13 +156,17 @@ export function renderProgress({ title, host, domain, stage, note }) {
     else text += `⏳ ${label}\n`;
   });
   if (note) text += `\n💬 <i>${esc(note)}</i>\n`;
-  text += '\n<i>کار روی خود سرور اجرا می‌شود و با قطع ارتباط متوقف نمی‌شود. معمولاً ۲ تا ۶ دقیقه طول می‌کشد.</i>';
+  text += '\n<i>کار روی خود سرور اجرا می‌شود و با قطع ارتباط متوقف نمی‌شود. معمولاً ۲ تا ۶ دقیقه طول می‌کشد، ولی اگر گرفتن گواهی کند باشد تا ۱۲ دقیقه هم ممکن است.</i>';
   return text;
 }
 
-function renderWarnings(warnings) {
-  if (!warnings?.length) return '';
-  return `\n\n⚠️ <b>نیازمند توجه:</b>\n${warnings.map((w) => `• ${esc(warningText(w))}`).join('\n')}`;
+function renderWarnings(result) {
+  if (!result.warnings?.length) return '';
+  const lines = result.warnings.map((w) => {
+    const detail = result[`warning_detail_${w}`];
+    return `• ${esc(warningText(w))}${detail ? `\n<code>${esc(detail)}</code>` : ''}`;
+  });
+  return `\n\n⚠️ <b>نیازمند توجه:</b>\n${lines.join('\n')}`;
 }
 
 /** The URL or, without public HTTPS, the SSH tunnel that reaches the panel. */
@@ -177,7 +182,7 @@ export function renderAccess({ result, host, sshUser, sshPort }) {
 const LOST_PASSWORD = '🔑 رمز ادمین در این عملیات تنظیم شد، ولی ربات دیگر آن را ندارد. با /repair و گزینهٔ «رمز ادمین تازه» رمز جدید بگیرید.';
 
 export function renderInstallDone({ result, host, sshUser, sshPort, adminUser, adminPass, plan }) {
-  const verified = !result.warnings.some((w) => /FAILED|MISSING/.test(w));
+  const verified = !result.warnings.some((w) => /FAILED|MISSING|STALLED/.test(w));
   let text = verified
     ? '🎉 <b>پنل WhiteDNS نصب و آزمایش شد.</b>'
     : '🟡 <b>پنل نصب شد، ولی همهٔ آزمایش‌ها موفق نبودند.</b>';
@@ -193,7 +198,7 @@ export function renderInstallDone({ result, host, sshUser, sshPort, adminUser, a
     text += `\n\n🖥 <b>اطلاعات تانل:</b>\n• زیردامنهٔ تانل: <code>${esc(plan.zone)}</code>\n• نیم‌سرور: <code>${esc(plan.nsHost)}</code>`;
   }
   if (result.version) text += `\n• نسخه: <code>${esc(result.version)}</code>`;
-  return text + renderWarnings(result.warnings);
+  return text + renderWarnings(result);
 }
 
 export function renderRepairDone({ result, host, sshUser, sshPort, adminUser, adminPass }) {
@@ -206,7 +211,7 @@ export function renderRepairDone({ result, host, sshUser, sshPort, adminUser, ad
   } else if (result.admin_changed === '1') {
     text += `\n\n${LOST_PASSWORD}`;
   }
-  return text + renderWarnings(result.warnings);
+  return text + renderWarnings(result);
 }
 
 export function renderFailure({ code, detail, status, backup }) {

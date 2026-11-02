@@ -91,6 +91,7 @@ echo '== fresh install'
 job; secret; run install
 check 'status ok' test "$(result status)" == ok
 check 'fresh flag' test "$(result fresh)" == 1
+check 'warning detail reaches the result' grep -q '^warning_detail_TUNNEL_RECURSIVE_FAILED=.' "$DIR/result.env"
 check 'panel active' systemctl is-active --quiet soar-panel
 check 'ops active' systemctl is-active --quiet soar-panel-ops
 check 'panel enabled' systemctl is-enabled --quiet soar-panel

@@ -36,7 +36,7 @@ ZONE='' NS_HOST='' PANEL_DOMAIN='' PUBLIC_IP='' LISTEN_IP='' ADMIN_USER=admin AD
 VERSION='' BUNDLE_SHA256='' RESET_ADMIN=0 ON_ZONE_MISMATCH=fail ALLOW_MIGRATE=0 UNINSTALL_MODE=keep
 RESOLVERS=1.1.1.1,8.8.8.8 FAULT=''
 
-OP='' FAIL_CODE='' FAIL_DETAIL='' WARNINGS=()
+OP='' FAIL_CODE='' FAIL_DETAIL='' WARNINGS=() WARNING_DETAILS=()
 FRESH=0 ADMIN_CHANGED=0 ACTIVATED=0 TRANSACTION=0 BACKUP='' WORK_DIR='' NEEDS_BINS=0 BUNDLE_ROOT=''
 OPS_WAS_ACTIVE=0 PANEL_WAS_ACTIVE=0 OLD_WAS_ACTIVE=0 PANEL_WANTED=0 PROBE_ID=''
 DNS_PORT=53 PANEL_BIND='' FIREWALL_ADDED=()
@@ -47,7 +47,7 @@ declare -A WAS_ENABLED=()
 
 clean() { tr -d '\r' <<< "${1:-}" | tr '\n\t' '  ' | cut -c1-300; }
 emit() { printf '@@ %s %s %s %s\n' "$1" "$2" "${3:--}" "$(clean "${4:-}")"; }
-warn() { WARNINGS+=("$2"); emit "$1" warn "$2" "${3:-}"; }
+warn() { WARNINGS+=("$2"); WARNING_DETAILS+=("warning_detail_$2=$(clean "${3:-}")"); emit "$1" warn "$2" "${3:-}"; }
 die() {
   FAIL_CODE=$1; FAIL_DETAIL=$(clean "${2:-}")
   exit 1
@@ -344,7 +344,8 @@ rollback() {
 }
 
 wait_health() {
-  for _ in {1..45}; do
+  local _
+  for _ in $(seq 1 "${1:-45}"); do
     if systemctl is-active --quiet soar-panel.service && systemctl is-active --quiet soar-panel-ops.service &&
       curl --silent --fail --max-time 2 --unix-socket /run/soar-panel-ops/control.sock http://localhost/status >/dev/null 2>&1 &&
       timeout 8 "$BIN" health --db "$DB" --listen "$PANEL_BIND" >/dev/null 2>&1; then return 0; fi
@@ -564,18 +565,25 @@ stage_https() {
     systemctl start soar-panel.service
     wait_health || die PANEL_UNHEALTHY 'after failed certificate request'
     restore_legacy_nginx
+    # timeout kills it silently, so the output alone would give the user nothing to go on.
+    if (( status == 124 )); then output='no certificate after 280 seconds'; fi
     warn https CERT_FAILED "$(tail -n1 <<< "$output")"
     return 0
   fi
   systemctl start soar-panel.service
-  if ! wait_health; then
+  # configure-access only obtains an RSA certificate. Browsers and the health check need ECDSA, which the
+  # panel orders on the first connection; autocert silently retries a 429 from Let's Encrypt for 5 minutes.
+  if ! wait_health 20; then
+    # Read while HTTPS is still on, because reverting below would hide the reason.
+    local health_error
+    health_error=$(timeout 8 "$BIN" health --db "$DB" --listen "$PANEL_BIND" 2>&1 | tail -n1 || true)
     systemctl stop soar-panel.service
     cp -p -- "$saved" "$ACCESS"
     chown soar-panel:soar-panel "$ACCESS"
     systemctl start soar-panel.service
     wait_health || die PANEL_UNHEALTHY 'after reverting HTTPS'
     restore_legacy_nginx
-    warn https CERT_FAILED 'panel unhealthy with HTTPS; previous address restored'
+    warn https CERT_STALLED "$health_error"
     return 0
   fi
   emit https ok
@@ -733,6 +741,7 @@ write_result() {
       echo "dns_port=$DNS_PORT"
     fi
     for warning in "${WARNINGS[@]:-}"; do [[ -z $warning ]] || echo "warning=$warning"; done
+    for warning in "${WARNING_DETAILS[@]:-}"; do [[ -z $warning ]] || echo "$warning"; done
   } > "$tmp"
   mv -f -- "$tmp" "$RESULT"
 }

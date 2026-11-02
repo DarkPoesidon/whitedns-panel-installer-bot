@@ -251,6 +251,23 @@ test('an unverified install is not presented as a clean success', async () => {
   assert.match(text, /ssh -N -L 2053:127\.0\.0\.1:2053 root@1\.2\.3\.4/);
 });
 
+test('the server error behind a warning reaches the user, escaped', async () => {
+  const h = harness({ job: { ...OK_RESULT, warnings: ['CERT_FAILED'], warning_detail_CERT_FAILED: 'acme: <rateLimited>' } });
+  await reachConfirm(h);
+  await h.press('deploy');
+  assert.match(h.last().text, /acme: &lt;rateLimited&gt;/);
+});
+
+test('a stalled certificate order is explained and is not shown as a clean install', async () => {
+  const h = harness({ job: { ...OK_RESULT, https: 'false', panel_bind: '127.0.0.1:2053', warnings: ['CERT_STALLED'], warning_detail_CERT_STALLED: 'context deadline exceeded' } });
+  await reachConfirm(h);
+  await h.press('deploy');
+  const { text } = h.last();
+  assert.match(text, /همهٔ آزمایش‌ها موفق نبودند/);
+  assert.match(text, /Let's Encrypt/);
+  assert.match(text, /context deadline exceeded/);
+});
+
 test('double click runs one install', async () => {
   const h = harness();
   await reachConfirm(h);

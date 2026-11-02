@@ -1,14 +1,19 @@
 {
   "name": "whitedns-server-bot",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Autonomous Telegram Bot with direct SSH execution for 100% automated WhiteDNS Soar Server deployment",
   "main": "src/bot.js",
   "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
-    "start": "node src/bot.js"
+    "start": "node src/bot.js",
+    "postinstall": "bash scripts/bot-setup.sh --if-legacy || true",
+    "test": "node --test test/*.test.js",
+    "test:agent": "bash -c \"bash -n scripts/agent.sh && { ! command -v shellcheck >/dev/null || shellcheck -S warning scripts/*.sh deploy.sh update.sh uninstall.sh menu.sh; }\""
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.1",
     "dotenv": "^16.4.7",
     "ssh2": "^1.16.0",
     "telegraf": "^4.16.3"
@@ -20,6 +25,6 @@
     "ssh",
     "automation"
   ],
-  "author": "Antigravity",
+  "author": "DarkPoesidon",
   "license": "MIT"
 }

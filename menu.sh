@@ -1,209 +1,95 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# WhiteDNS Telegram Bot - Interactive Terminal Management Menu
+# WhiteDNS Telegram Bot - Terminal Management Menu
 # ==============================================================================
 set -Eeuo pipefail
 export LC_ALL=C
-export DEBIAN_FRONTEND=noninteractive
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
+[[ $EUID == 0 ]] || { echo '[ERROR] Run as root: sudo -i, then whitedns-bot'; exit 1; }
 
-if [[ $EUID -ne 0 ]]; then
-  echo -e "${RED}[ERROR] This menu must be run as root.${NC}"
-  echo -e "Please run ${YELLOW}sudo -i${NC} first, then re-run ${CYAN}whitedns-bot${NC}."
-  exit 1
-fi
+BOT_DIR=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+ENV_FILE=$BOT_DIR/.env
+DB=/var/lib/whitedns-bot/data.db
 
-INSTALL_DIR="/opt/whitedns-bot"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+pause() { read -r -p 'Press Enter to return to the menu... ' _; }
 
-if [[ -d "$INSTALL_DIR" ]]; then
-  BOT_DIR="$INSTALL_DIR"
-elif [[ -d "$SCRIPT_DIR" && -f "$SCRIPT_DIR/src/bot.js" ]]; then
-  BOT_DIR="$SCRIPT_DIR"
-else
-  BOT_DIR="$INSTALL_DIR"
-  mkdir -p "$BOT_DIR"
-fi
-
-# Ensure menu.sh is saved locally in BOT_DIR
-if [[ -d "$BOT_DIR" && ! -f "$BOT_DIR/menu.sh" ]]; then
-  curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/menu.sh -o "$BOT_DIR/menu.sh" 2>/dev/null || true
-  chmod +x "$BOT_DIR/menu.sh" 2>/dev/null || true
-fi
-
-# Install permanent standalone launcher wrappers (not broken symlinks)
-install_global_launchers() {
-  cat > /usr/bin/whitedns-bot <<'EOF_BIN'
-#!/usr/bin/env bash
-if [[ -f /opt/whitedns-bot/menu.sh ]]; then
-  exec bash /opt/whitedns-bot/menu.sh "$@"
-else
-  exec bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/menu.sh) "$@"
-fi
-EOF_BIN
-  chmod +x /usr/bin/whitedns-bot
-  cp -f /usr/bin/whitedns-bot /usr/bin/bot
-  mkdir -p /usr/local/bin
-  cp -f /usr/bin/whitedns-bot /usr/local/bin/whitedns-bot
-  cp -f /usr/bin/whitedns-bot /usr/local/bin/bot
-  hash -r 2>/dev/null || true
+set_env() {
+  local key=$1 value=$2 tmp
+  tmp=$(mktemp "$ENV_FILE.XXXXXX")
+  grep -v "^$key=" "$ENV_FILE" > "$tmp" || true
+  printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  chmod 0600 "$tmp"
+  mv -f -- "$tmp" "$ENV_FILE"
 }
-install_global_launchers
 
-cd "$BOT_DIR"
+list_panels() {
+  [[ -f $DB ]] || { echo 'No database yet.'; return 0; }
+  DB=$DB node --no-warnings -e "
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(process.env.DB, { readOnly: true });
+    const rows = db.prepare('SELECT id, domain, vps_ip, panel_url FROM deployments ORDER BY id DESC').all();
+    if (rows.length) console.table(rows); else console.log('No panels yet. Send /start to the bot.');
+  " || echo 'Could not read the database.'
+}
 
 while true; do
   clear 2>/dev/null || true
-  STATUS="UNKNOWN"
-  STATUS_COLOR="$RED"
-  if systemctl is-active --quiet whitedns-bot.service 2>/dev/null; then
-    STATUS="ACTIVE (RUNNING)"
-    STATUS_COLOR="$GREEN"
-  else
-    STATUS="STOPPED"
-    STATUS_COLOR="$RED"
-  fi
-
-  echo -e "${CYAN}======================================================${NC}"
-  echo -e "${BOLD}       WhiteDNS Telegram Bot - Management Menu        ${NC}"
-  echo -e "${CYAN}======================================================${NC}"
-  echo -e " Service: ${STATUS_COLOR}${STATUS}${NC} | Path: ${YELLOW}${BOT_DIR}${NC}"
-  echo -e "${CYAN}------------------------------------------------------${NC}"
-  echo -e " ${GREEN}1)${NC} Service Status           (systemctl status)"
-  echo -e " ${GREEN}2)${NC} View Live Logs           (journalctl -u whitedns-bot -f)"
-  echo -e " ${GREEN}3)${NC} Restart Bot Service      (systemctl restart)"
-  echo -e " ${GREEN}4)${NC} Stop Bot Service         (systemctl stop)"
-  echo -e " ${GREEN}5)${NC} Start Bot Service        (systemctl start)"
-  echo -e "${CYAN}------------------------------------------------------${NC}"
-  echo -e " ${GREEN}6)${NC} View Deployed Panels     (List active servers & URLs)"
-  echo -e " ${GREEN}7)${NC} Update Bot to Latest     (git pull & update)"
-  echo -e " ${GREEN}8)${NC} Change Telegram Token    (Edit BOT_TOKEN in .env)"
-  echo -e " ${GREEN}9)${NC} Completely Uninstall     (Purge bot and systemd unit)"
-  echo -e "${CYAN}------------------------------------------------------${NC}"
-  echo -e " ${YELLOW}0) Exit Menu${NC}"
-  echo -e "${CYAN}======================================================${NC}"
-  read -r -p "Select an option [0-9]: " CHOICE
-
-  case "$CHOICE" in
-    1)
-      echo -e "\n${BLUE}--- WhiteDNS Bot Service Status ---${NC}"
-      systemctl status whitedns-bot.service --no-pager || true
-      echo -e "\n${YELLOW}Press Enter to return to menu...${NC}"
-      read -r
-      ;;
-    2)
-      echo -e "\n${BLUE}--- Live Logs (Press Ctrl+C to stop) ---${NC}"
-      journalctl -u whitedns-bot.service -f -n 50 || true
-      ;;
-    3)
-      echo -e "\n${BLUE}Restarting whitedns-bot.service...${NC}"
-      systemctl restart whitedns-bot.service
-      sleep 2
-      if systemctl is-active --quiet whitedns-bot.service; then
-        echo -e "${GREEN}[OK] Service successfully restarted!${NC}"
-      else
-        echo -e "${RED}[ERROR] Service failed to restart.${NC}"
-      fi
-      echo -e "\n${YELLOW}Press Enter to return to menu...${NC}"
-      read -r
-      ;;
-    4)
-      echo -e "\n${BLUE}Stopping whitedns-bot.service...${NC}"
-      systemctl stop whitedns-bot.service
-      echo -e "${YELLOW}[OK] Service stopped.${NC}"
-      sleep 1
-      ;;
-    5)
-      echo -e "\n${BLUE}Starting whitedns-bot.service...${NC}"
-      systemctl start whitedns-bot.service
-      sleep 2
-      if systemctl is-active --quiet whitedns-bot.service; then
-        echo -e "${GREEN}[OK] Service is now active and running!${NC}"
-      else
-        echo -e "${RED}[ERROR] Failed to start service.${NC}"
-      fi
-      sleep 1
-      ;;
-    6)
-      echo -e "\n${BLUE}--- Registered WhiteDNS Deployments ---${NC}"
-      if [[ -f "$BOT_DIR/data.db" ]]; then
-        node --input-type=module -e "
-          import Database from 'better-sqlite3';
-          try {
-            const db = new Database('$BOT_DIR/data.db');
-            const rows = db.prepare('SELECT id, domain, vps_ip, panel_url, status FROM deployments ORDER BY id DESC').all();
-            if (rows.length === 0) {
-              console.log('No deployments found yet. Run /start in Telegram to install a panel.');
-            } else {
-              console.table(rows);
-            }
-          } catch(e) {
-            console.log('Could not read database:', e.message);
-          }
-        " || true
-      else
-        echo -e "${YELLOW}No database file found yet.${NC}"
-      fi
-      echo -e "\n${YELLOW}Press Enter to return to menu...${NC}"
-      read -r
-      ;;
-    7)
-      echo -e "\n${BLUE}Updating WhiteDNS Bot from GitHub...${NC}"
-      if [[ -f "$BOT_DIR/update.sh" ]]; then
-        bash "$BOT_DIR/update.sh"
-      else
-        bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/update.sh)
-      fi
-      echo -e "\n${YELLOW}Press Enter to return to menu...${NC}"
-      read -r
-      ;;
+  if systemctl is-active --quiet whitedns-bot.service; then STATE='ACTIVE'; else STATE='STOPPED'; fi
+  cat <<MENU
+======================================================
+        WhiteDNS Telegram Bot - Management Menu
+======================================================
+ Service: $STATE | Path: $BOT_DIR
+------------------------------------------------------
+ 1) Service status
+ 2) Live logs (Ctrl+C to stop)
+ 3) Restart bot
+ 4) Stop bot
+ 5) Start bot
+------------------------------------------------------
+ 6) List deployed panels
+ 7) Update bot
+ 8) Change Telegram token
+ 9) Set admin chat ids (allowed to use /update)
+10) Uninstall bot
+------------------------------------------------------
+ 0) Exit
+======================================================
+MENU
+  read -r -p 'Select an option: ' choice
+  case "$choice" in
+    1) systemctl status whitedns-bot.service --no-pager || true; pause ;;
+    2) journalctl -u whitedns-bot.service -f -n 50 || true ;;
+    3) systemctl restart whitedns-bot.service; sleep 2; systemctl is-active whitedns-bot.service || true; pause ;;
+    4) systemctl stop whitedns-bot.service ;;
+    5) systemctl start whitedns-bot.service; sleep 2; systemctl is-active whitedns-bot.service || true; pause ;;
+    6) list_panels; pause ;;
+    7) bash "$BOT_DIR/update.sh" || true; pause ;;
     8)
-      ENV_FILE="$BOT_DIR/.env"
-      CURRENT_TOKEN=""
-      if [[ -f "$ENV_FILE" ]]; then
-        CURRENT_TOKEN=$(grep -E '^BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2- || true)
-      fi
-      echo -e "\nCurrent BOT_TOKEN: ${YELLOW}$CURRENT_TOKEN${NC}"
-      echo -e "Enter new BOT_TOKEN from @BotFather (or press Enter to cancel):"
-      read -r -p "New Token: " NEW_TOKEN
-      NEW_TOKEN=$(echo "$NEW_TOKEN" | tr -d ' "')
-      if [[ -n "$NEW_TOKEN" && "$NEW_TOKEN" == *:* ]]; then
-        cat > "$ENV_FILE" <<EOF
-BOT_TOKEN=${NEW_TOKEN}
-NODE_ENV=production
-EOF
-        chmod 600 "$ENV_FILE"
+      read -r -p 'New token from @BotFather (empty to cancel): ' token
+      token=${token//[ \"]/}
+      if [[ $token =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+        set_env BOT_TOKEN "$token"
         systemctl restart whitedns-bot.service
-        echo -e "${GREEN}[OK] BOT_TOKEN updated and bot restarted!${NC}"
+        echo '[OK] Token updated.'
       else
-        echo -e "${YELLOW}No change made.${NC}"
+        echo 'No change made.'
       fi
-      sleep 2
+      pause
       ;;
     9)
-      echo -e "\n${RED}--- Completely Uninstall Bot ---${NC}"
-      if [[ -f "$BOT_DIR/uninstall.sh" ]]; then
-        bash "$BOT_DIR/uninstall.sh"
+      read -r -p 'Comma separated chat ids (send /id to the bot to see yours): ' ids
+      if [[ $ids =~ ^-?[0-9]+(,-?[0-9]+)*$ ]]; then
+        set_env ADMIN_CHAT_IDS "$ids"
+        systemctl restart whitedns-bot.service
+        echo '[OK] Admins updated.'
       else
-        bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/uninstall.sh)
+        echo 'No change made.'
       fi
-      exit 0
+      pause
       ;;
-    0)
-      echo -e "\n${GREEN}[OK] Global commands are active! You can reopen this menu anytime by typing:${NC}"
-      echo -e "       ${CYAN}whitedns-bot${NC}  or  ${CYAN}bot${NC}\n"
-      exit 0
-      ;;
-    *)
-      echo -e "\n${RED}Invalid option. Please try again.${NC}"
-      sleep 1
-      ;;
+    10) bash "$BOT_DIR/uninstall.sh"; exit 0 ;;
+    0) exit 0 ;;
+    *) echo 'Invalid option.'; sleep 1 ;;
   esac
 done

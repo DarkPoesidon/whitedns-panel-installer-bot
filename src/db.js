@@ -1,171 +1,139 @@
-import Database from 'better-sqlite3';
-import { fileURLToPath } from 'url';
-import path from 'path';
+import { DatabaseSync } from 'node:sqlite';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const dbPath = path.resolve(__dirname, '../data.db');
+const SESSION_TTL_SECONDS = 1800;
+// Secrets belong in the vault; this guard turns a slip into a loud failure instead of a leak.
+const SECRET_KEYS = new Set(['password', 'privateKey', 'passphrase', 'cfAuth', 'adminPass', 'cfToken', 'vpsPass']);
 
-export const db = new Database(dbPath);
+const columnsOf = (db, table) => db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
 
-// Enable WAL mode for high concurrency
-db.pragma('journal_mode = WAL');
-
-// Initialize database tables
-db.exec(`
-  CREATE TABLE IF NOT EXISTS sessions (
-    chat_id INTEGER PRIMARY KEY,
-    step TEXT NOT NULL DEFAULT 'IDLE',
-    cf_token TEXT,
-    zone_id TEXT,
-    domain TEXT,
-    vps_ip TEXT,
-    vps_port INTEGER DEFAULT 22,
-    vps_user TEXT DEFAULT 'root',
-    vps_pass TEXT,
-    admin_pass TEXT,
-    repair_ip TEXT,
-    repair_domain TEXT,
-    uninst_ip TEXT,
-    uninst_domain TEXT,
-    updated_at INTEGER DEFAULT (strftime('%s', 'now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS deployments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id INTEGER NOT NULL,
-    domain TEXT NOT NULL,
-    vps_ip TEXT NOT NULL,
-    panel_url TEXT,
-    status TEXT DEFAULT 'IN_PROGRESS',
-    created_at INTEGER DEFAULT (strftime('%s', 'now'))
-  );
-`);
-
-// Migration guards for existing databases
-try { db.exec('ALTER TABLE sessions ADD COLUMN repair_ip TEXT'); } catch (e) {}
-try { db.exec('ALTER TABLE sessions ADD COLUMN repair_domain TEXT'); } catch (e) {}
-try { db.exec('ALTER TABLE sessions ADD COLUMN uninst_ip TEXT'); } catch (e) {}
-try { db.exec('ALTER TABLE sessions ADD COLUMN uninst_domain TEXT'); } catch (e) {}
-
-export function getSession(chatId) {
-  const row = db.prepare('SELECT * FROM sessions WHERE chat_id = ?').get(chatId);
-  if (!row) return null;
-  return {
-    chatId: row.chat_id,
-    step: row.step,
-    cfToken: row.cf_token,
-    zoneId: row.zone_id,
-    domain: row.domain,
-    vpsIp: row.vps_ip,
-    vpsPort: row.vps_port,
-    vpsUser: row.vps_user,
-    vpsPass: row.vps_pass,
-    adminPass: row.admin_pass,
-    repairIp: row.repair_ip,
-    repairDomain: row.repair_domain,
-    uninstIp: row.uninst_ip,
-    uninstDomain: row.uninst_domain
-  };
-}
-
-export function saveSession(chatId, fields) {
-  const existing = getSession(chatId);
-  if (!existing) {
-    db.prepare(`
-      INSERT INTO sessions (chat_id, step, cf_token, zone_id, domain, vps_ip, vps_port, vps_user, vps_pass, admin_pass, repair_ip, repair_domain, uninst_ip, uninst_domain, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
-    `).run(
-      chatId,
-      fields.step || 'IDLE',
-      fields.cfToken || null,
-      fields.zoneId || null,
-      fields.domain || null,
-      fields.vpsIp || null,
-      fields.vpsPort || 22,
-      fields.vpsUser || 'root',
-      fields.vpsPass || null,
-      fields.adminPass || null,
-      fields.repairIp || null,
-      fields.repairDomain || null,
-      fields.uninstIp || null,
-      fields.uninstDomain || null
+function migrate(db) {
+  db.exec("PRAGMA secure_delete = ON");
+  // Versions before 2.0 stored SSH passwords and Cloudflare tokens here in plain text.
+  if (columnsOf(db, 'sessions').includes('vps_pass')) {
+    db.exec('DROP TABLE sessions');
+    db.exec('VACUUM');
+    // In WAL mode VACUUM only reaches the log; the main file keeps the old pages until this runs.
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS wizard (
+      chat_id INTEGER PRIMARY KEY,
+      step TEXT NOT NULL DEFAULT 'IDLE',
+      data TEXT NOT NULL DEFAULT '{}',
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
-  } else {
-    const updated = { ...existing, ...fields };
-    db.prepare(`
-      UPDATE sessions SET
-        step = ?,
-        cf_token = ?,
-        zone_id = ?,
-        domain = ?,
-        vps_ip = ?,
-        vps_port = ?,
-        vps_user = ?,
-        vps_pass = ?,
-        admin_pass = ?,
-        repair_ip = ?,
-        repair_domain = ?,
-        uninst_ip = ?,
-        uninst_domain = ?,
-        updated_at = strftime('%s', 'now')
-      WHERE chat_id = ?
-    `).run(
-      updated.step,
-      updated.cfToken,
-      updated.zoneId,
-      updated.domain,
-      updated.vpsIp,
-      updated.vpsPort,
-      updated.vpsUser,
-      updated.vpsPass,
-      updated.adminPass,
-      updated.repairIp || null,
-      updated.repairDomain || null,
-      updated.uninstIp || null,
-      updated.uninstDomain || null,
-      chatId
+    CREATE TABLE IF NOT EXISTS deployments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      domain TEXT NOT NULL,
+      vps_ip TEXT NOT NULL,
+      panel_url TEXT,
+      status TEXT DEFAULT 'COMPLETED',
+      created_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
+    CREATE TABLE IF NOT EXISTS known_hosts (
+      host TEXT NOT NULL,
+      port INTEGER NOT NULL,
+      fingerprint TEXT NOT NULL,
+      PRIMARY KEY (host, port)
+    );
+    CREATE TABLE IF NOT EXISTS jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      host TEXT NOT NULL,
+      op TEXT NOT NULL,
+      finished INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    );
+  `);
+  const have = columnsOf(db, 'deployments');
+  for (const [name, type] of [['ssh_port', 'INTEGER DEFAULT 22'], ['ssh_user', "TEXT DEFAULT 'root'"], ['zone', 'TEXT'], ['ns_host', 'TEXT'], ['panel_domain', 'TEXT'], ['zone_id', 'TEXT']]) {
+    if (!have.includes(name)) db.exec(`ALTER TABLE deployments ADD COLUMN ${name} ${type}`);
   }
 }
 
-export function resetSession(chatId, initialStep = 'AWAITING_CF_EMAIL') {
-  db.prepare(`
-    INSERT INTO sessions (chat_id, step, cf_token, zone_id, domain, vps_ip, vps_port, vps_user, vps_pass, admin_pass, repair_ip, repair_domain, uninst_ip, uninst_domain, updated_at)
-    VALUES (?, ?, NULL, NULL, NULL, NULL, 22, 'root', NULL, NULL, NULL, NULL, NULL, NULL, strftime('%s', 'now'))
-    ON CONFLICT(chat_id) DO UPDATE SET
-      step = ?,
-      cf_token = NULL,
-      zone_id = NULL,
-      domain = NULL,
-      vps_ip = NULL,
-      vps_port = 22,
-      vps_user = 'root',
-      vps_pass = NULL,
-      admin_pass = NULL,
-      repair_ip = NULL,
-      repair_domain = NULL,
-      uninst_ip = NULL,
-      uninst_domain = NULL,
-      updated_at = strftime('%s', 'now')
-  `).run(chatId, initialStep, initialStep);
-}
+export function createStore(dbPath) {
+  const db = new DatabaseSync(dbPath);
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
+  migrate(db);
 
-export function addDeployment({ chatId, domain, vpsIp, panelUrl, status = 'COMPLETED' }) {
-  db.prepare(`
-    INSERT INTO deployments (chat_id, domain, vps_ip, panel_url, status)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(chatId, domain, vpsIp, panelUrl, status);
-}
+  const cleanup = () => {
+    const cutoff = Math.floor(Date.now() / 1000) - SESSION_TTL_SECONDS;
+    db.prepare('DELETE FROM wizard WHERE updated_at < ?').run(cutoff);
+  };
 
-export function listDeployments(chatId) {
-  return db.prepare('SELECT * FROM deployments WHERE chat_id = ? ORDER BY id DESC').all(chatId);
-}
+  return {
+    close: () => db.close(),
+    cleanup,
 
-export function removeDeployment(id) {
-  db.prepare('DELETE FROM deployments WHERE id = ?').run(id);
-}
+    getSession(chatId) {
+      const row = db.prepare('SELECT step, data FROM wizard WHERE chat_id = ?').get(chatId);
+      return row ? { ...JSON.parse(row.data), step: row.step } : { step: 'IDLE' };
+    },
+    saveSession(chatId, fields) {
+      for (const key of Object.keys(fields)) {
+        if (SECRET_KEYS.has(key)) throw new Error(`refusing to persist secret field ${key}`);
+      }
+      const { step, ...data } = { ...this.getSession(chatId), ...fields };
+      db.prepare(`
+        INSERT INTO wizard (chat_id, step, data, updated_at) VALUES (?, ?, ?, strftime('%s', 'now'))
+        ON CONFLICT(chat_id) DO UPDATE SET step = excluded.step, data = excluded.data, updated_at = excluded.updated_at
+      `).run(chatId, step, JSON.stringify(data));
+    },
+    resetSession(chatId, step = 'IDLE') {
+      db.prepare(`
+        INSERT INTO wizard (chat_id, step, data, updated_at) VALUES (?, ?, '{}', strftime('%s', 'now'))
+        ON CONFLICT(chat_id) DO UPDATE SET step = excluded.step, data = '{}', updated_at = excluded.updated_at
+      `).run(chatId, step);
+    },
 
-export function deleteDeploymentByIp(chatId, vpsIp) {
-  db.prepare('DELETE FROM deployments WHERE chat_id = ? AND vps_ip = ?').run(chatId, vpsIp);
+    /** One row per server: a reinstall or repair updates the row instead of adding another. */
+    upsertDeployment({ chatId, domain, vpsIp, panelUrl, sshPort = 22, sshUser = 'root', zone = null, nsHost = null, panelDomain = null, zoneId = null, status = 'COMPLETED' }) {
+      const existing = db.prepare('SELECT id FROM deployments WHERE chat_id = ? AND vps_ip = ?').get(chatId, vpsIp);
+      if (existing) {
+        db.prepare(`
+          UPDATE deployments SET domain = ?, panel_url = COALESCE(?, panel_url), status = ?, ssh_port = ?, ssh_user = ?,
+            zone = COALESCE(?, zone), ns_host = COALESCE(?, ns_host), panel_domain = COALESCE(?, panel_domain), zone_id = COALESCE(?, zone_id)
+          WHERE id = ?
+        `).run(domain, panelUrl ?? null, status, sshPort, sshUser, zone, nsHost, panelDomain, zoneId, existing.id);
+        return existing.id;
+      }
+      return Number(db.prepare(`
+        INSERT INTO deployments (chat_id, domain, vps_ip, panel_url, status, ssh_port, ssh_user, zone, ns_host, panel_domain, zone_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(chatId, domain, vpsIp, panelUrl ?? null, status, sshPort, sshUser, zone, nsHost, panelDomain, zoneId).lastInsertRowid);
+    },
+    listDeployments(chatId) {
+      return db.prepare('SELECT * FROM deployments WHERE chat_id = ? ORDER BY id DESC').all(chatId);
+    },
+    getDeployment(chatId, id) {
+      return db.prepare('SELECT * FROM deployments WHERE chat_id = ? AND id = ?').get(chatId, id);
+    },
+    deleteDeployment(chatId, id) {
+      db.prepare('DELETE FROM deployments WHERE chat_id = ? AND id = ?').run(chatId, id);
+    },
+
+    getKnownHost(host, port) {
+      return db.prepare('SELECT fingerprint FROM known_hosts WHERE host = ? AND port = ?').get(host, port)?.fingerprint ?? null;
+    },
+    setKnownHost(host, port, fingerprint) {
+      db.prepare(`
+        INSERT INTO known_hosts (host, port, fingerprint) VALUES (?, ?, ?)
+        ON CONFLICT(host, port) DO UPDATE SET fingerprint = excluded.fingerprint
+      `).run(host, port, fingerprint);
+    },
+
+    beginJob(chatId, host, op) {
+      return Number(db.prepare('INSERT INTO jobs (chat_id, host, op) VALUES (?, ?, ?)').run(chatId, host, op).lastInsertRowid);
+    },
+    finishJob(id) {
+      db.prepare('UPDATE jobs SET finished = 1 WHERE id = ?').run(id);
+    },
+    /** Jobs the previous process left behind; returned once, then marked as handled. */
+    takeOrphanedJobs() {
+      const rows = db.prepare('SELECT * FROM jobs WHERE finished = 0').all();
+      db.exec('UPDATE jobs SET finished = 1 WHERE finished = 0');
+      return rows;
+    },
+  };
 }

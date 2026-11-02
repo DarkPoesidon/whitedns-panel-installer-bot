@@ -1,187 +1,84 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# WhiteDNS Soar Panel Telegram Bot - 1-Line Autonomous Installer
+# WhiteDNS Soar Panel Telegram Bot - 1-Line Installer
 # Repository: https://github.com/DarkPoesidon/whitedns-panel-installer-bot
+#
+# Usage: deploy.sh [BOT_TOKEN] | --update | --uninstall
+# Re-running is safe: settings, data and existing deployments are kept.
 # ==============================================================================
 set -Eeuo pipefail
-export LC_ALL=C
-export DEBIAN_FRONTEND=noninteractive
+export LC_ALL=C DEBIAN_FRONTEND=noninteractive
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+INSTALL_DIR=${INSTALL_DIR:-/opt/whitedns-bot}
+REPO_URL=${REPO_URL:-https://github.com/DarkPoesidon/whitedns-panel-installer-bot.git}
+BRANCH=${BRANCH:-main}
 
-echo -e "${CYAN}======================================================"
-echo -e "   WhiteDNS Soar Server - Telegram Bot Installer"
-echo -e "======================================================${NC}"
+fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
-if [[ $EUID -ne 0 ]]; then
-  echo -e "${RED}[ERROR] This script must be run as root.${NC}"
-  echo -e "Please run ${YELLOW}sudo -i${NC} first, then re-run this command."
-  exit 1
-fi
+[[ $EUID == 0 ]] || fail 'Run as root: sudo -i, then run this command again.'
 
-INSTALL_DIR="/opt/whitedns-bot"
-REPO_URL="https://github.com/DarkPoesidon/whitedns-panel-installer-bot.git"
-
-# Handle CLI flags
-if [[ "${1:-}" == "--update" || "${1:-}" == "update" ]]; then
-  if [[ -f "$INSTALL_DIR/update.sh" ]]; then
+case "${1:-}" in
+  --update|update)
+    [[ -f $INSTALL_DIR/update.sh ]] || fail "No installation found in $INSTALL_DIR."
     exec bash "$INSTALL_DIR/update.sh"
-  else
-    exec bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/update.sh)
-  fi
-fi
-
-if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" ]]; then
-  if [[ -f "$INSTALL_DIR/uninstall.sh" ]]; then
+    ;;
+  --uninstall|uninstall)
+    [[ -f $INSTALL_DIR/uninstall.sh ]] || fail "No installation found in $INSTALL_DIR."
     exec bash "$INSTALL_DIR/uninstall.sh" "${2:-}"
-  else
-    exec bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/uninstall.sh) "${2:-}"
-  fi
-fi
+    ;;
+esac
 
-# 1. Install prerequisites (curl, git, build-essential)
-echo -e "${BLUE}[1/5] Checking and installing system packages (curl, git, build-essential)...${NC}"
-apt-get update -y
-apt-get install -y curl git build-essential ca-certificates
+[[ -d /run/systemd/system ]] || fail 'A running systemd is required.'
 
-# 2. Install Node.js 20+
-NEED_NODE=0
-if ! command -v node >/dev/null 2>&1; then
-  NEED_NODE=1
+echo '[1/4] Installing system packages...'
+apt-get -o DPkg::Lock::Timeout=300 update -y
+apt-get -o DPkg::Lock::Timeout=300 install -y curl git ca-certificates
+
+echo '[2/4] Fetching the bot...'
+if [[ -d $INSTALL_DIR/.git ]]; then
+  git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL"
+elif [[ -e $INSTALL_DIR ]]; then
+  # A directory from the old standalone installer: keep .env and data, adopt the rest.
+  git -C "$INSTALL_DIR" init -q -b "$BRANCH"
+  git -C "$INSTALL_DIR" remote add origin "$REPO_URL"
 else
-  NODE_VER=$(node -v | sed 's/v//' | cut -d. -f1)
-  if (( NODE_VER < 20 )); then
-    NEED_NODE=1
-  fi
+  git clone -q --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
 fi
+git -C "$INSTALL_DIR" fetch -q origin "$BRANCH"
+git -C "$INSTALL_DIR" reset -q --hard FETCH_HEAD
 
-if (( NEED_NODE )); then
-  echo -e "${BLUE}[2/5] Installing Node.js 20 LTS from NodeSource...${NC}"
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-  apt-get install -y nodejs
+echo '[3/4] Configuring...'
+ENV_FILE=$INSTALL_DIR/.env
+read_env() { grep -E "^$1=" "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d ' "' || true; }
+BOT_TOKEN=${1:-$(read_env BOT_TOKEN)}
+ADMIN_CHAT_IDS=${ADMIN_CHAT_IDS:-$(read_env ADMIN_CHAT_IDS)}
+if [[ -z $BOT_TOKEN && -t 0 ]]; then
+  read -r -p 'BOT_TOKEN from @BotFather: ' BOT_TOKEN
+  BOT_TOKEN=${BOT_TOKEN//[ \"]/}
 fi
-echo -e "${GREEN}[OK] Node.js $(node -v) is ready.${NC}"
-
-# 3. Clone or update repository
-if [[ -d "$INSTALL_DIR" ]]; then
-  echo -e "${BLUE}[3/5] Setting up repository in $INSTALL_DIR...${NC}"
-  cd "$INSTALL_DIR"
-  git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
-  if [[ ! -d "$INSTALL_DIR/.git" ]]; then
-    git init -b main 2>/dev/null || git init
-    git remote add origin "$REPO_URL" 2>/dev/null || true
-  fi
-  git remote set-url origin "$REPO_URL" 2>/dev/null || git remote add origin "$REPO_URL" 2>/dev/null || true
-  git fetch --all --prune
-  git reset --hard origin/main || git reset --hard origin/master
-else
-  echo -e "${BLUE}[3/5] Cloning repository into $INSTALL_DIR...${NC}"
-  git clone "$REPO_URL" "$INSTALL_DIR"
-  cd "$INSTALL_DIR"
+[[ $BOT_TOKEN =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || fail 'Invalid token. Expected 123456789:ABCdefGhIjk...'
+if [[ -z $ADMIN_CHAT_IDS && -t 0 ]]; then
+  echo 'Your Telegram chat id allows /update from Telegram. Leave empty to set it later; /id in the bot shows it.'
+  read -r -p 'ADMIN_CHAT_IDS: ' ADMIN_CHAT_IDS
 fi
+[[ -z $ADMIN_CHAT_IDS || $ADMIN_CHAT_IDS =~ ^-?[0-9]+(,-?[0-9]+)*$ ]] || fail 'ADMIN_CHAT_IDS must be comma separated numbers.'
+(
+  umask 077
+  # Settings added by hand, such as SOAR_PANEL_VERSION, survive a re-run.
+  others=$(grep -vE '^(BOT_TOKEN|ADMIN_CHAT_IDS|NODE_ENV)=' "$ENV_FILE" 2>/dev/null || true)
+  printf 'BOT_TOKEN=%s\nADMIN_CHAT_IDS=%s\nNODE_ENV=production\n' "$BOT_TOKEN" "$ADMIN_CHAT_IDS" > "$ENV_FILE.new"
+  [[ -z $others ]] || printf '%s\n' "$others" >> "$ENV_FILE.new"
+  mv -f -- "$ENV_FILE.new" "$ENV_FILE"
+)
 
-# 4. Configure BOT_TOKEN
-ENV_FILE="$INSTALL_DIR/.env"
-BOT_TOKEN="${1:-}"
-
-if [[ -z "$BOT_TOKEN" && -f "$ENV_FILE" ]]; then
-  EXISTING_TOKEN=$(grep -E '^BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2- | tr -d ' "' || true)
-  if [[ -n "$EXISTING_TOKEN" ]]; then
-    BOT_TOKEN="$EXISTING_TOKEN"
-  fi
-fi
-
-if [[ -z "$BOT_TOKEN" ]]; then
-  echo -e "\n${YELLOW}[INPUT] Telegram Bot Token configuration:${NC}"
-  echo -e "Enter the BOT_TOKEN received from ${CYAN}@BotFather${NC}:"
-  read -r -p "BOT_TOKEN: " INPUT_TOKEN
-  BOT_TOKEN=$(echo "$INPUT_TOKEN" | tr -d ' "')
-fi
-
-if [[ -z "$BOT_TOKEN" || "$BOT_TOKEN" != *:* ]]; then
-  echo -e "${RED}[ERROR] Invalid token format. Expected: 123456789:ABCdefGhIjk...${NC}"
-  exit 1
-fi
-
-cat > "$ENV_FILE" <<EOF
-BOT_TOKEN=${BOT_TOKEN}
-NODE_ENV=production
-EOF
-chmod 600 "$ENV_FILE"
-echo -e "${GREEN}[OK] Environment file (.env) configured.${NC}"
-
-# 5. Install dependencies
-echo -e "${BLUE}[4/5] Installing npm dependencies (npm install)...${NC}"
-npm install --omit=dev
-
-chmod +x "$INSTALL_DIR/scripts/install-soar.sh" "$INSTALL_DIR/scripts/repair-soar.sh" "$INSTALL_DIR/scripts/uninstall-soar.sh" 2>/dev/null || true
-chmod +x "$INSTALL_DIR/menu.sh" "$INSTALL_DIR/update.sh" "$INSTALL_DIR/uninstall.sh" 2>/dev/null || true
-cat > /usr/bin/whitedns-bot <<'EOF_BIN'
-#!/usr/bin/env bash
-if [[ -f /opt/whitedns-bot/menu.sh ]]; then
-  exec bash /opt/whitedns-bot/menu.sh "$@"
-else
-  exec bash <(curl -fsSL https://raw.githubusercontent.com/DarkPoesidon/whitedns-panel-installer-bot/main/menu.sh) "$@"
-fi
-EOF_BIN
-chmod +x /usr/bin/whitedns-bot
-cp -f /usr/bin/whitedns-bot /usr/bin/bot
-mkdir -p /usr/local/bin
-cp -f /usr/bin/whitedns-bot /usr/local/bin/whitedns-bot
-cp -f /usr/bin/whitedns-bot /usr/local/bin/bot
-hash -r 2>/dev/null || true
-
-# 6. Setup and start systemd service
-echo -e "${BLUE}[5/5] Setting up systemd service (whitedns-bot.service)...${NC}"
-SERVICE_FILE="/etc/systemd/system/whitedns-bot.service"
-NODE_BIN=$(command -v node)
-
-cat > "$SERVICE_FILE" <<EOF
-[Unit]
-Description=WhiteDNS Autonomous Telegram Bot
-After=network.target network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=${INSTALL_DIR}
-EnvironmentFile=${ENV_FILE}
-ExecStart=${NODE_BIN} src/bot.js
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now whitedns-bot.service
-
-sleep 2
+echo '[4/4] Installing dependencies and services...'
+bash "$INSTALL_DIR/scripts/bot-setup.sh"
+systemctl restart whitedns-bot.service
+sleep 3
 if systemctl is-active --quiet whitedns-bot.service; then
-  echo -e "\n${GREEN}======================================================"
-  echo -e "   WhiteDNS Bot successfully installed and active!"
-  echo -e "======================================================${NC}"
-  echo -e "Service Status: ${GREEN}Active (Running)${NC}"
-  echo -e "\n${BOLD}Terminal Management Menu:${NC}"
-  echo -e "  Type ${CYAN}whitedns-bot${NC} or ${CYAN}bot${NC} anytime to open the management dashboard!"
-  echo -e "\nNow open Telegram and send ${CYAN}/start${NC} to your bot."
-  echo -e "\nUseful server commands:"
-  echo -e "  Open Menu:        ${YELLOW}whitedns-bot${NC} (or ${YELLOW}bot${NC})"
-  echo -e "  View live logs:   ${YELLOW}journalctl -u whitedns-bot -f${NC}"
-  echo -e "  Restart service:  ${YELLOW}systemctl restart whitedns-bot${NC}"
-  echo -e "  Service status:   ${YELLOW}systemctl status whitedns-bot${NC}"
-  echo -e "  Stop service:     ${YELLOW}systemctl stop whitedns-bot${NC}"
+  printf '\n[OK] Bot is running. Send /start to your bot in Telegram.\n'
+  printf 'Menu: whitedns-bot (or bot)   Logs: journalctl -u whitedns-bot -f\n'
 else
-  echo -e "${RED}[ERROR] Service failed to start. Review logs below:${NC}"
-  journalctl -u whitedns-bot -n 20 --no-pager
-  exit 1
+  journalctl -u whitedns-bot -n 20 --no-pager || true
+  fail 'The service failed to start. See the log above.'
 fi

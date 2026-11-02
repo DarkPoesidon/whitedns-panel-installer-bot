@@ -14,12 +14,15 @@ const statusCard = (list) => {
     if (d.panel_url) text += `  <b>آدرس پنل:</b> ${esc(d.panel_url)}\n`;
     text += '\n';
   }
-  return `${text}<i>وضعیت زندهٔ هر سرور را با /repair بررسی کنید.</i>`;
+  return `${text}<i>وضعیت زندهٔ هر سرور را با تعمیر بررسی کنید. «حذف از فهرست» فقط نام سرور را از اینجا برمی‌دارد و روی خود سرور کاری نمی‌کند.</i>`;
 };
 
-const statusRows = (list) => (list.length
-  ? [[BTN.start], [BTN.repair], [BTN.uninstall]]
-  : [[BTN.start], [BTN.repair]]);
+const statusRows = (list) => [
+  ...list.map((d) => [{ text: `➖ حذف از فهرست: ${d.domain} (${d.vps_ip})`, data: `forget:${d.id}` }]),
+  [BTN.menu],
+];
+
+const backRows = (op) => [[{ text: '🔙 بازگشت', data: `menu:${op}` }, BTN.cancel]];
 
 const OPS = {
   repair: {
@@ -42,6 +45,7 @@ export function maintenanceFlow({ bot, app }) {
   const list = (op) => (ctx) => {
     const chatId = ctx.chat.id;
     const deployments = store.listDeployments(chatId);
+    store.saveSession(chatId, { step: 'IDLE' });
     if (!deployments.length) {
       store.saveSession(chatId, { step: 'AWAITING_MAINT_HOST', maintOp: op, target: null });
       return respond(ctx, `${OPS[op].prompt}\n\nسروری در تاریخچهٔ شما ثبت نیست.\n\n📌 <b>آی‌پی سرور</b> را بفرستید، یا: <code>IP:Port:User:Password</code>`, [[BTN.cancel]]);
@@ -53,7 +57,7 @@ export function maintenanceFlow({ bot, app }) {
 
   const askCredential = (ctx, op, target, deployment) => {
     store.saveSession(ctx.chat.id, { step: 'AWAITING_MAINT_PASS', maintOp: op, target, deploymentId: deployment?.id ?? null });
-    return respond(ctx, `${OPS[op].prompt}\n\n🖥 <code>${esc(target.host)}</code> (پورت <code>${esc(target.port)}</code>، کاربر <code>${esc(target.user)}</code>)\n\n🔑 لطفاً <b>رمز عبور</b> یا متن <b>کلید خصوصی SSH</b> را بفرستید.\n<i>(پیام شما بلافاصله حذف می‌شود)</i>`, [[BTN.cancel]]);
+    return respond(ctx, `${OPS[op].prompt}\n\n🖥 <code>${esc(target.host)}</code> (پورت <code>${esc(target.port)}</code>، کاربر <code>${esc(target.user)}</code>)\n\n🔑 لطفاً <b>رمز عبور</b> یا متن <b>کلید خصوصی SSH</b> را بفرستید.\n<i>(پیام شما بلافاصله حذف می‌شود)</i>`, backRows(op));
   };
 
   /** Inspects the server, then asks for the final choice of this operation. */
@@ -69,29 +73,38 @@ export function maintenanceFlow({ bot, app }) {
         store.saveSession(chatId, { pendingFingerprint: err.fingerprint });
         return show(telegram, chatId, status, hostKeyChangedText(target.host, err.fingerprint), [[{ text: '✅ کلید جدید را می‌پذیرم', data: 'maint_hostkey' }], [BTN.cancel]]);
       }
-      return show(telegram, chatId, status, `❌ ${esc(failureText(err.code))}\n\n<code>${esc(err.message)}</code>`, [[{ text: '🔄 تلاش مجدد', data: 'maint_retry' }], [BTN.cancel]]);
+      const rows = [[{ text: '🔄 تلاش مجدد', data: 'maint_retry' }]];
+      if (s.deploymentId) rows.push([{ text: '➖ این سرور دیگر وجود ندارد، از فهرست حذف شود', data: `forget:${s.deploymentId}` }]);
+      return show(telegram, chatId, status, `❌ ${esc(failureText(err.code))}\n\n<code>${esc(err.message)}</code>`, [...rows, ...backRows(s.maintOp)]);
     }
     try {
       const facts = await deps.probe(session, target.host);
       store.saveSession(chatId, { facts, step: 'CONFIRM_MAINT' });
       if (facts.job_active === '1') {
         // A job from before a restart or a dropped connection: follow it rather than start another.
-        return show(telegram, chatId, status, '⏳ <b>عملیاتی روی این سرور در حال اجراست.</b>\nمی‌توانید نتیجهٔ آن را دنبال کنید.', [[{ text: '👀 دنبال کردن عملیات', data: 'maint_go:attach' }], [BTN.cancel]]);
+        return show(telegram, chatId, status, '⏳ <b>عملیاتی روی این سرور در حال اجراست.</b>\nمی‌توانید نتیجهٔ آن را دنبال کنید.', [[{ text: '👀 دنبال کردن عملیات', data: 'maint_go:attach' }], ...backRows(s.maintOp)]);
+      }
+      // The server itself is the proof: a listed server with no panel on it is a stale entry.
+      if (facts.installed !== '1' && s.deploymentId) {
+        store.deleteDeployment(chatId, s.deploymentId);
+        store.saveSession(chatId, { deploymentId: null });
+        const removed = '\n\nاین سرور از فهرست شما حذف شد.';
+        return show(telegram, chatId, status, `ℹ️ ${esc(failureText('NOT_INSTALLED'))}${removed}`, [[BTN.start], [BTN.menu]]);
       }
       if (s.maintOp === 'repair') {
         if (facts.installed !== '1') {
-          return show(telegram, chatId, status, `ℹ️ ${esc(failureText('NOT_INSTALLED'))}`, [[BTN.start], [BTN.cancel]]);
+          return show(telegram, chatId, status, `ℹ️ ${esc(failureText('NOT_INSTALLED'))}`, [[BTN.start], ...backRows(s.maintOp)]);
         }
         return show(telegram, chatId, status, `🛠 <b>آمادهٔ تعمیر</b>\n\n🖥 <code>${esc(target.host)}</code>\n• تانل: <code>${esc(facts.zone)}</code>\n• نسخه: <code>${esc(facts.panel_version || 'نامشخص')}</code>\n• سرویس پنل: ${facts.panel_active === '1' ? '🟢 فعال' : '🔴 متوقف'}`, [
           [{ text: '🛠 شروع تعمیر', data: 'maint_go:repair' }],
           [{ text: '🔑 تعمیر همراه با رمز ادمین تازه', data: 'maint_go:repair_reset' }],
-          [BTN.cancel],
+          ...backRows(s.maintOp),
         ]);
       }
       return show(telegram, chatId, status, `⚠️ <b>حذف پنل از سرور</b>\n\n🖥 <code>${esc(target.host)}</code>\n• تانل: <code>${esc(facts.zone || 'نامشخص')}</code>\n\nسرویس‌ها و باینری‌ها حذف می‌شوند و کاربران پنل قطع می‌شوند. nginx، فایروال و سرویس‌های دیگر شما دست نمی‌خورند.\n\nیک نسخهٔ پشتیبان در <code>/root</code> می‌ماند، حتی در حذف کامل.`, [
         [{ text: '🗑 حذف، با نگه داشتن دیتابیس', data: 'maint_go:keep' }],
         [{ text: '🔥 حذف کامل همراه با دیتابیس', data: 'maint_go:purge' }],
-        [BTN.cancel],
+        ...backRows(s.maintOp),
       ]);
     } finally {
       session.close();
@@ -104,7 +117,7 @@ export function maintenanceFlow({ bot, app }) {
     if (!target || !hasCredential(vault, chatId)) {
       return show(telegram, chatId, null, '⚠️ اطلاعات این نشست منقضی شده است. لطفاً دوباره شروع کنید.', [[BTN.repair]]);
     }
-    if (!tasks.tryLock(target.host)) return show(telegram, chatId, null, '⏳ عملیات دیگری روی این سرور در حال اجراست.');
+    if (!tasks.tryLock(target.host)) return show(telegram, chatId, null, '⏳ عملیات دیگری روی این سرور در حال اجراست.', [[BTN.menu]]);
 
     const op = s.maintOp;
     const deployment = s.deploymentId ? store.getDeployment(chatId, s.deploymentId) : null;
@@ -142,7 +155,7 @@ export function maintenanceFlow({ bot, app }) {
       await edits.finish();
 
       if (result.status !== 'ok') {
-        return show(telegram, chatId, message, renderFailure(result), [[{ text: '🔄 تلاش مجدد', data: 'maint_retry' }], [BTN.cancel]]);
+        return show(telegram, chatId, message, renderFailure(result), [[{ text: '🔄 تلاش مجدد', data: 'maint_retry' }], ...backRows(op)]);
       }
       // The job that ran decides, not the menu: following someone's install from /uninstall must not delete records.
       if (result.op === 'uninstall') return finishUninstall(telegram, chatId, message, { session, target, deployment, result });
@@ -151,17 +164,17 @@ export function maintenanceFlow({ bot, app }) {
       const adminPass = result.attached ? null : generated;
 
       if (deployment) store.upsertDeployment({ chatId, domain: deployment.domain, vpsIp: target.host, panelUrl: result.panel_url, sshPort: target.port, sshUser: target.user });
-      else if (result.zone) store.upsertDeployment({ chatId, domain: result.zone, vpsIp: target.host, panelUrl: result.panel_url, sshPort: target.port, sshUser: target.user });
+      else if (result.zone) store.upsertDeployment({ chatId, domain: result.zone.split('.').slice(1).join('.'), vpsIp: target.host, panelUrl: result.panel_url, sshPort: target.port, sshUser: target.user });
       store.resetSession(chatId);
       vault.clear(chatId);
       const rows = [];
       if (result.https === 'true' && result.panel_url) rows.push([{ text: '🌐 ورود به پنل', url: result.panel_url }]);
-      rows.push([BTN.status]);
+      rows.push([BTN.status], [BTN.menu]);
       return show(telegram, chatId, message, renderRepairDone({ result, host: target.host, sshUser: target.user, sshPort: target.port, adminUser: ADMIN_USER, adminPass }), rows);
     } catch (err) {
       await edits.finish();
       const text = err.code ? `${esc(failureText(err.code))}\n\n<code>${esc(err.message)}</code>` : esc(err.message);
-      return show(telegram, chatId, message, `❌ <b>عملیات متوقف شد</b>\n\n${text}`, [[{ text: '🔄 تلاش مجدد', data: 'maint_retry' }], [BTN.cancel]]);
+      return show(telegram, chatId, message, `❌ <b>عملیات متوقف شد</b>\n\n${text}`, [[{ text: '🔄 تلاش مجدد', data: 'maint_retry' }], ...backRows(op)]);
     } finally {
       session?.close();
       store.finishJob(jobId);
@@ -189,7 +202,7 @@ export function maintenanceFlow({ bot, app }) {
     if (deployment) store.deleteDeployment(chatId, deployment.id);
     store.resetSession(chatId);
     vault.clear(chatId);
-    return show(telegram, chatId, message, `🎉 <b>پنل WhiteDNS از سرور حذف شد.</b>\n\n🖥 <code>${esc(target.host)}</code>\n🗄 نسخهٔ پشتیبان روی سرور: <code>${esc(result.backup)}</code>\n<i>این پوشه شامل کلیدهای پنل است. اگر لازمش ندارید خودتان پاکش کنید.</i>${dnsNote}`, [[{ text: '🚀 نصب مجدد یا جدید', data: 'cmd:start' }]]);
+    return show(telegram, chatId, message, `🎉 <b>پنل WhiteDNS از سرور حذف شد.</b>\n\n🖥 <code>${esc(target.host)}</code>\n🗄 نسخهٔ پشتیبان روی سرور: <code>${esc(result.backup)}</code>\n<i>این پوشه شامل کلیدهای پنل است. اگر لازمش ندارید خودتان پاکش کنید.</i>${dnsNote}`, [[BTN.start], [BTN.menu]]);
   }
 
   // ---- commands & buttons --------------------------------------------------------
@@ -199,6 +212,10 @@ export function maintenanceFlow({ bot, app }) {
   };
   bot.command('status', showStatus);
   action(bot, 'menu:status', showStatus);
+  action(bot, /^forget:(\d+)$/, (ctx) => {
+    store.deleteDeployment(ctx.chat.id, Number(ctx.match[1]));
+    return showStatus(ctx);
+  });
   bot.command(['repair', 'fix'], list('repair'));
   action(bot, 'menu:repair', list('repair'));
   bot.command('uninstall', list('uninstall'));
@@ -211,7 +228,7 @@ export function maintenanceFlow({ bot, app }) {
   });
   action(bot, /^maint_manual:(repair|uninstall)$/, (ctx) => {
     store.saveSession(ctx.chat.id, { step: 'AWAITING_MAINT_HOST', maintOp: ctx.match[1], target: null });
-    return respond(ctx, '📌 <b>آی‌پی سرور</b> را بفرستید، یا: <code>IP:Port:User:Password</code>', [[BTN.cancel]]);
+    return respond(ctx, '📌 <b>آی‌پی سرور</b> را بفرستید، یا: <code>IP:Port:User:Password</code>', backRows(ctx.match[1]));
   });
   action(bot, 'maint_retry', (ctx) => {
     if (!hasCredential(vault, ctx.chat.id)) return respond(ctx, '⚠️ اطلاعات این نشست منقضی شده است. لطفاً دوباره شروع کنید.', [[BTN.repair]]);

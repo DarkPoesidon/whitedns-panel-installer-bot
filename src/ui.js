@@ -7,9 +7,16 @@ export function keyboard(rows = []) {
   };
 }
 
+/** Any screen with buttons also leads out of itself, so no step of any flow can be a dead end. */
+function withExit(rows) {
+  if (!rows.length) return rows;
+  const hasExit = rows.flat().some((b) => /^(cancel$|menu:main$|back:)/.test(b.data ?? ''));
+  return hasExit ? rows : [...rows, [BTN.menu]];
+}
+
 /** Edits a message when possible, otherwise sends a new one. Returns the message id. */
 export async function show(telegram, chatId, messageId, text, rows = []) {
-  const extra = { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: keyboard(rows) };
+  const extra = { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: keyboard(withExit(rows)) };
   if (messageId) {
     try {
       await telegram.editMessageText(chatId, messageId, undefined, text, extra);
@@ -23,13 +30,24 @@ export async function show(telegram, chatId, messageId, text, rows = []) {
 }
 
 export const BTN = {
+  menu: { text: '🏠 منوی اصلی', data: 'menu:main' },
   cancel: { text: '❌ انصراف', data: 'cancel' },
-  start: { text: '🚀 شروع نصب جدید', data: 'cmd:start' },
+  start: { text: '🚀 نصب پنل جدید', data: 'cmd:start' },
   repair: { text: '🛠 عیب‌یابی و تعمیر سرور', data: 'menu:repair' },
   uninstall: { text: '🗑 حذف یا پاک‌سازی سرور', data: 'menu:uninstall' },
   dns: { text: '⚙️ مدیریت رکوردهای DNS', data: 'cmd:dns' },
   status: { text: '📊 مشاهده وضعیت سرورها', data: 'menu:status' },
 };
+
+export const MENU_TEXT = '🏠 <b>منوی اصلی ربات WhiteDNS</b>\n\nیکی از گزینه‌ها را انتخاب کنید:';
+export const menuRows = () => [
+  [BTN.start],
+  [BTN.status],
+  [BTN.repair],
+  [BTN.uninstall],
+  [BTN.dns],
+  [{ text: '❓ راهنما', data: 'menu:help' }],
+];
 
 export function termsText() {
   return `📜 <b>بیانیه حفظ حریم خصوصی، امنیت اطلاعات و شرایط استفاده</b>
@@ -60,7 +78,7 @@ export const HELP_TEXT = `📖 <b>راهنمای ربات نصب خودکار Wh
 ۳. باز بودن پورت‌های UDP و TCP شماره ۵۳، و TCP شماره ۸۰ و ۴۴۳ در فایروال پرووایدر.
 
 🔹 <b>دستورات:</b>
-• /start - نصب پنل جدید
+• /start - منوی اصلی
 • /status - پنل‌ها و لینک‌ها
 • /repair - عیب‌یابی و تعمیر
 • /dns - مدیریت رکوردهای DNS

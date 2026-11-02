@@ -1,5 +1,5 @@
 import { Telegraf } from 'telegraf';
-import { BTN, HELP_TEXT } from './ui.js';
+import { BTN, HELP_TEXT, MENU_TEXT, menuRows } from './ui.js';
 import { action, createAttemptLimiter, createTasks, respond } from './flows/common.js';
 import { installFlow } from './flows/install.js';
 import { maintenanceFlow } from './flows/maintenance.js';
@@ -7,7 +7,7 @@ import { dnsFlow } from './flows/dns.js';
 import { adminFlow } from './flows/admin.js';
 
 const COMMANDS = [
-  { command: 'start', description: '🚀 شروع و نصب پنل WhiteDNS' },
+  { command: 'start', description: '🏠 منوی اصلی' },
   { command: 'status', description: '📊 مشاهده سرورها و پنل‌های فعال' },
   { command: 'repair', description: '🛠 عیب‌یابی و تعمیر خودکار سرور' },
   { command: 'dns', description: '⚙️ مدیریت رکوردهای DNS کلودفلر' },
@@ -40,12 +40,21 @@ export function createApp({ token, apiRoot, store, vault, deps, adminIds = new S
   dnsFlow({ bot, app, zoneCache });
   const admin = adminFlow({ bot, app, adminIds, requestFile, statusFile, reportedFile, pollMs });
 
-  bot.command('help', (ctx) => respond(ctx, HELP_TEXT, [[BTN.start], [BTN.repair], [BTN.dns]]));
+  const showMenu = (ctx) => {
+    store.saveSession(ctx.chat.id, { step: 'IDLE' });
+    return respond(ctx, MENU_TEXT, menuRows());
+  };
+  bot.command(['start', 'menu'], showMenu);
+  action(bot, 'menu:main', showMenu);
+
+  const showHelp = (ctx) => respond(ctx, HELP_TEXT, [[BTN.menu]]);
+  bot.command('help', showHelp);
+  action(bot, 'menu:help', showHelp);
 
   const reset = (ctx) => {
     store.resetSession(ctx.chat.id);
     vault.clear(ctx.chat.id);
-    return respond(ctx, '🔄 <b>عملیات جاری لغو و اطلاعات موقت پاک شد.</b>', [[{ text: '🚀 شروع مجدد', data: 'cmd:start' }]]);
+    return respond(ctx, `🔄 <b>عملیات جاری لغو و اطلاعات موقت پاک شد.</b>\n\n${MENU_TEXT}`, menuRows());
   };
   bot.command(['reset', 'cancel'], reset);
   action(bot, 'cancel', reset);

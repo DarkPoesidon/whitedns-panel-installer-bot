@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { respond } from './common.js';
+import { BTN, show } from '../ui.js';
 import { escapeHtml as esc } from '../validate.js';
 
 const POLL_MS = 3000;
@@ -30,11 +31,11 @@ export function adminFlow({ bot, app, adminIds, requestFile, statusFile, reporte
     ? `✅ ربات به‌روز است (${commit}).`
     : `❌ به‌روزرسانی به ${commit} شکست خورد و نسخهٔ قبلی برگردانده شد.`);
 
-  bot.command('id', (ctx) => respond(ctx, `🆔 شناسهٔ چت شما: <code>${esc(ctx.chat.id)}</code>`));
+  bot.command('id', (ctx) => respond(ctx, `🆔 شناسهٔ چت شما: <code>${esc(ctx.chat.id)}</code>`, [[BTN.menu]]));
 
   bot.command('update', async (ctx) => {
     if (!isAdmin(ctx)) {
-      return respond(ctx, '⛔ این دستور فقط برای مدیر این ربات است. شناسهٔ مدیر در <code>ADMIN_CHAT_IDS</code> فایل <code>.env</code> تعریف می‌شود.');
+      return respond(ctx, '⛔ این دستور فقط برای مدیر این ربات است. شناسهٔ مدیر در <code>ADMIN_CHAT_IDS</code> فایل <code>.env</code> تعریف می‌شود.', [[BTN.menu]]);
     }
     const before = readText(statusFile);
     fs.writeFileSync(requestFile, `${ctx.chat.id}\n`, { mode: 0o600 });
@@ -50,11 +51,11 @@ export function adminFlow({ bot, app, adminIds, requestFile, statusFile, reporte
       const line = readText(statusFile);
       if (line && line !== before) {
         fs.writeFileSync(reportedFile, line);
-        await telegram.editMessageText(chatId, messageId, undefined, outcome(parseUpdateStatus(line))).catch(() => {});
+        await show(telegram, chatId, messageId, outcome(parseUpdateStatus(line)), [[BTN.menu]]).catch(() => {});
         return;
       }
     }
-    await telegram.editMessageText(chatId, messageId, undefined, '⚠️ نتیجهٔ به‌روزرسانی نرسید. لاگ را با <code>journalctl -u whitedns-bot-update</code> ببینید.', { parse_mode: 'HTML' }).catch(() => {});
+    await show(telegram, chatId, messageId, '⚠️ نتیجهٔ به‌روزرسانی نرسید. لاگ را با <code>journalctl -u whitedns-bot-update</code> ببینید.', [[BTN.menu]]).catch(() => {});
   }
 
   /** An update restarts this process, so its result is reported on the next start, once. */
@@ -63,7 +64,7 @@ export function adminFlow({ bot, app, adminIds, requestFile, statusFile, reporte
     if (!line || line === readText(reportedFile)) return;
     fs.writeFileSync(reportedFile, line);
     const status = parseUpdateStatus(line);
-    if (status.chatId) telegram.sendMessage(status.chatId, outcome(status)).catch(() => {});
+    if (status.chatId) show(telegram, status.chatId, null, outcome(status), [[BTN.menu]]).catch(() => {});
   }
 
   return { reportFinishedUpdate };

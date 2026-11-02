@@ -21,6 +21,17 @@ const PLAN = {
 };
 const OK_RESULT = { status: 'ok', panel_url: 'https://panel.x.io/secretpath/', https: 'true', version: '0.14.0', admin_changed: '1', warnings: [], backup: '/root/b' };
 
+/** Every screen the user is left on must lead somewhere: this runs after every update of every test. */
+function assertWayOut(sent) {
+  const screen = [...sent].reverse().find((m) => m.method === 'sendMessage' || m.method === 'editMessageText');
+  if (!screen || screen.payload.text.startsWith('⏳ درخواست به‌روزرسانی')) return;
+  const buttons = screen.payload.reply_markup?.inline_keyboard?.flat() ?? [];
+  assert.ok(
+    buttons.some((b) => /^(cancel$|menu:main$|back:)/.test(b.callback_data ?? '')),
+    `dead end: ${screen.payload.text.slice(0, 80)}`,
+  );
+}
+
 function harness({ facts = FACTS, plan = PLAN, job = OK_RESULT, connectError, adminIds = new Set() } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wdns-flow-'));
   const dbFile = path.join(dir, 'data.db');
@@ -74,12 +85,13 @@ function harness({ facts = FACTS, plan = PLAN, job = OK_RESULT, connectError, ad
     update += 1;
     await app.bot.handleUpdate({ update_id: update, ...body });
     await app.tasks.idle();
+    assertWayOut(sent);
   };
   return {
     app, store, vault, deps, calls, sent, dbFile, requestFile, statusFile,
     text: (text) => handle({ message: { message_id: (nextId += 1), date: 0, chat, from, text, ...(text.startsWith('/') ? { entities: [{ type: 'bot_command', offset: 0, length: text.split(' ')[0].length }] } : {}) } }),
     press: (data) => handle({ callback_query: { id: 'q', from, chat_instance: 'x', data, message: { message_id: 500, date: 0, chat, from, text: 'x' } } }),
-    group: (text) => handle({ message: { message_id: 1, date: 0, chat: { id: -5, type: 'group', title: 'g' }, from, text, entities: [{ type: 'bot_command', offset: 0, length: text.length }] } }),
+    group: (text) => app.bot.handleUpdate({ update_id: 1, message: { message_id: 1, date: 0, chat: { id: -5, type: 'group', title: 'g' }, from, text, entities: [{ type: 'bot_command', offset: 0, length: text.length }] } }),
     last: () => [...sent].reverse().find((m) => m.method === 'sendMessage' || m.method === 'editMessageText')?.payload,
     allText: () => sent.map((m) => m.payload?.text ?? '').join('\n'),
     buttons: () => [...sent].reverse().find((m) => m.payload?.reply_markup?.inline_keyboard)?.payload.reply_markup.inline_keyboard.flat(),
@@ -461,6 +473,73 @@ test('user text is escaped in HTML replies', async () => {
   await h.press('terms_accept');
   await h.text('a<b>@x.io');
   assert.equal(h.last().text.includes('a<b>@x.io'), false);
+});
+
+test('/start opens a main menu that reaches every feature', async () => {
+  const h = harness();
+  await h.text('/start');
+  assert.match(h.last().text, /منوی اصلی/);
+  const data = h.buttons().map((b) => b.callback_data);
+  for (const target of ['cmd:start', 'menu:status', 'menu:repair', 'menu:uninstall', 'cmd:dns', 'menu:help']) assert.ok(data.includes(target), target);
+  await h.press('cmd:start');
+  assert.match(h.last().text, /حریم خصوصی/);
+  await h.press('terms_decline');
+  await h.press('menu:main');
+  assert.match(h.last().text, /منوی اصلی/);
+});
+
+test('cancel returns to the menu and clears the step', async () => {
+  const h = harness();
+  await reachConfirm(h);
+  await h.press('cancel');
+  assert.match(h.last().text, /منوی اصلی/);
+  assert.equal(h.store.getSession(CHAT).step, 'IDLE');
+  assert.equal(h.vault.get(CHAT, 'password'), undefined);
+});
+
+test('leaving a password prompt means later text is not taken as a password', async () => {
+  const h = harness({ facts: { ...FACTS, installed: '1', zone: 'soar.x.io' } });
+  const id = h.store.upsertDeployment({ chatId: CHAT, domain: 'x.io', vpsIp: '1.2.3.4' });
+  await h.text('/repair');
+  await h.press(`maint:repair:${id}`);
+  assert.equal(h.buttons().some((b) => b.callback_data === 'menu:repair'), true);
+  await h.press('menu:repair');
+  await h.text('this is not a password');
+  assert.equal(h.vault.get(CHAT, 'password'), undefined);
+  assert.equal(h.calls.connect.length, 0);
+});
+
+test('installing a domain on a new server replaces its old entry', async () => {
+  const h = harness();
+  h.store.upsertDeployment({ chatId: CHAT, domain: 'x.io', vpsIp: '8.8.4.4' });
+  await reachConfirm(h);
+  await h.press('deploy');
+  assert.deepEqual(h.store.listDeployments(CHAT).map((d) => d.vps_ip), ['1.2.3.4']);
+});
+
+test('a listed server with no panel on it leaves the list', async () => {
+  const h = harness();
+  const id = h.store.upsertDeployment({ chatId: CHAT, domain: 'x.io', vpsIp: '1.2.3.4' });
+  await h.text('/repair');
+  await h.press(`maint:repair:${id}`);
+  await h.text('rootpassword');
+  assert.match(h.last().text, /از فهرست شما حذف شد/);
+  assert.equal(h.store.listDeployments(CHAT).length, 0);
+  assert.equal(h.calls.job.length, 0);
+});
+
+test('an unreachable server can be removed from the list, and only by its owner', async () => {
+  const h = harness({ connectError: new SshError('TIMEOUT', 'x') });
+  const id = h.store.upsertDeployment({ chatId: CHAT, domain: 'x.io', vpsIp: '1.2.3.4' });
+  const other = h.store.upsertDeployment({ chatId: 999, domain: 'y.io', vpsIp: '5.6.7.8' });
+  await h.text('/repair');
+  await h.press(`maint:repair:${id}`);
+  await h.text('rootpassword');
+  assert.equal(h.buttons().some((b) => b.callback_data === `forget:${id}`), true);
+  await h.press(`forget:${id}`);
+  assert.equal(h.store.listDeployments(CHAT).length, 0);
+  await h.press(`forget:${other}`);
+  assert.equal(h.store.listDeployments(999).length, 1);
 });
 
 test('jobs left by a previous process are announced on startup', async () => {

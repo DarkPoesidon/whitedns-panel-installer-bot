@@ -64,6 +64,20 @@ test('deployment upsert keeps one row per server and is scoped per chat', () => 
   store.close();
 });
 
+test('old databases keep only the newest server of each domain', () => {
+  const file = tempDb();
+  const old = new DatabaseSync(file);
+  old.exec(`
+    CREATE TABLE deployments (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, domain TEXT, vps_ip TEXT, panel_url TEXT, status TEXT, created_at INTEGER);
+    INSERT INTO deployments (chat_id, domain, vps_ip) VALUES (1, 'x.io', '8.8.4.4'), (1, 'x.io', '1.0.0.1'), (1, 'y.io', '9.9.9.9'), (2, 'x.io', '8.8.8.8');
+  `);
+  old.close();
+  const store = createStore(file);
+  assert.deepEqual(store.listDeployments(1).map((d) => d.vps_ip), ['9.9.9.9', '1.0.0.1']);
+  assert.deepEqual(store.listDeployments(2).map((d) => d.vps_ip), ['8.8.8.8']);
+  store.close();
+});
+
 test('orphaned jobs are reported exactly once', () => {
   const store = createStore(tempDb());
   store.beginJob(1, 'h', 'install');

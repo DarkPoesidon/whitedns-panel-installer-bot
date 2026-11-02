@@ -50,12 +50,18 @@ function migrate(db) {
   for (const [name, type] of [['ssh_port', 'INTEGER DEFAULT 22'], ['ssh_user', "TEXT DEFAULT 'root'"], ['zone', 'TEXT'], ['ns_host', 'TEXT'], ['panel_domain', 'TEXT'], ['zone_id', 'TEXT']]) {
     if (!have.includes(name)) db.exec(`ALTER TABLE deployments ADD COLUMN ${name} ${type}`);
   }
+  // A domain's records point at one server, so older rows for it describe servers it left.
+  db.exec('DELETE FROM deployments WHERE id NOT IN (SELECT MAX(id) FROM deployments GROUP BY chat_id, domain)');
 }
 
 export function createStore(dbPath) {
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
   migrate(db);
+
+  const dropOtherServers = (chatId, domain, id) => {
+    db.prepare('DELETE FROM deployments WHERE chat_id = ? AND domain = ? AND id != ?').run(chatId, domain, id);
+  };
 
   const cleanup = () => {
     const cutoff = Math.floor(Date.now() / 1000) - SESSION_TTL_SECONDS;
@@ -96,12 +102,15 @@ export function createStore(dbPath) {
             zone = COALESCE(?, zone), ns_host = COALESCE(?, ns_host), panel_domain = COALESCE(?, panel_domain), zone_id = COALESCE(?, zone_id)
           WHERE id = ?
         `).run(domain, panelUrl ?? null, status, sshPort, sshUser, zone, nsHost, panelDomain, zoneId, existing.id);
+        dropOtherServers(chatId, domain, existing.id);
         return existing.id;
       }
-      return Number(db.prepare(`
+      const id = Number(db.prepare(`
         INSERT INTO deployments (chat_id, domain, vps_ip, panel_url, status, ssh_port, ssh_user, zone, ns_host, panel_domain, zone_id)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(chatId, domain, vpsIp, panelUrl ?? null, status, sshPort, sshUser, zone, nsHost, panelDomain, zoneId).lastInsertRowid);
+      dropOtherServers(chatId, domain, id);
+      return id;
     },
     listDeployments(chatId) {
       return db.prepare('SELECT * FROM deployments WHERE chat_id = ? ORDER BY id DESC').all(chatId);

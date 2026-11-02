@@ -35,8 +35,7 @@ export function installFlow({ bot, app }) {
 
   const cfPromptRows = [
     [{ text: '🚀 باز کردن فرم آماده توکن (۱-کلیک)', url: CF_TEMPLATE_URL }],
-    [BTN.repair],
-    [BTN.cancel],
+    [BTN.menu],
   ];
   const cfPrompt = (ctx) => respond(ctx, `👋 <b>شروع فرآیند نصب WhiteDNS Soar Server</b>
 
@@ -160,9 +159,9 @@ export function installFlow({ bot, app }) {
     const target = { host: s.sshHost, port: s.sshPort, user: s.sshUser };
     const cfAuth = vault.get(chatId, 'cfAuth');
     if (!s.plan || !cfAuth || !hasCredential(vault, chatId)) {
-      return show(telegram, chatId, null, '⚠️ اطلاعات این نشست منقضی شده است. لطفاً /start را بزنید.');
+      return show(telegram, chatId, null, '⚠️ اطلاعات این نشست منقضی شده است. لطفاً نصب را از نو شروع کنید.', [[BTN.start], [BTN.menu]]);
     }
-    if (!tasks.tryLock(target.host)) return show(telegram, chatId, null, '⏳ عملیات دیگری روی این سرور در حال اجراست.');
+    if (!tasks.tryLock(target.host)) return show(telegram, chatId, null, '⏳ عملیات دیگری روی این سرور در حال اجراست.', [[BTN.menu]]);
 
     const jobId = store.beginJob(chatId, target.host, 'install');
     const title = 'در حال نصب خودکار WhiteDNS';
@@ -214,7 +213,7 @@ export function installFlow({ bot, app }) {
       vault.clear(chatId);
       const rows = [];
       if (result.https === 'true' && result.panel_url) rows.push([{ text: '🌐 ورود به پنل WhiteDNS', url: result.panel_url }]);
-      rows.push([BTN.status]);
+      rows.push([BTN.status], [BTN.menu]);
       return show(telegram, chatId, message, renderInstallDone({
         // A password generated here was not used if a job was already running on the server.
         result, host: target.host, sshUser: target.user, sshPort: target.port, adminUser: ADMIN_USER, adminPass: result.attached ? null : adminPass, plan: s.plan,
@@ -239,7 +238,6 @@ export function installFlow({ bot, app }) {
       [{ text: '❌ نمی‌پذیرم و انصراف', data: 'terms_decline' }],
     ]);
   };
-  bot.command('start', startTerms);
   action(bot, 'cmd:start', startTerms);
   action(bot, 'terms_accept', (ctx) => {
     store.saveSession(ctx.chat.id, { step: 'AWAITING_CF_EMAIL' });
@@ -247,7 +245,7 @@ export function installFlow({ bot, app }) {
   });
   action(bot, 'terms_decline', (ctx) => {
     store.resetSession(ctx.chat.id);
-    return respond(ctx, '❌ <b>فرآیند لغو شد.</b>\n\nهیچ اطلاعاتی دریافت یا ذخیره نشد.', [[{ text: '🚀 شروع مجدد', data: 'cmd:start' }]]);
+    return respond(ctx, '❌ <b>فرآیند لغو شد.</b>\n\nهیچ اطلاعاتی دریافت یا ذخیره نشد.', [[BTN.menu]]);
   });
   action(bot, 'back:cf_email', (ctx) => {
     store.saveSession(ctx.chat.id, { step: 'AWAITING_CF_EMAIL' });
@@ -300,7 +298,7 @@ export function installFlow({ bot, app }) {
 
   const runPrepare = (ctx) => {
     if (!hasCredential(vault, ctx.chat.id) || !vault.get(ctx.chat.id, 'cfAuth')) {
-      return respond(ctx, '⚠️ اطلاعات این نشست منقضی شده است. لطفاً /start را بزنید.', [[BTN.start]]);
+      return respond(ctx, '⚠️ اطلاعات این نشست منقضی شده است. لطفاً نصب را از نو شروع کنید.', [[BTN.start], [BTN.menu]]);
     }
     tasks.run(ctx.chat.id, () => prepare(ctx.telegram, ctx.chat.id));
     return undefined;

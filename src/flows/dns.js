@@ -18,7 +18,7 @@ export function dnsFlow({ bot, app, zoneCache }) {
     store.saveSession(ctx.chat.id, { step: 'AWAITING_DNS_CF_AUTH' });
     return respond(ctx, '⚙️ <b>مدیریت رکوردهای DNS کلودفلر</b>\n\nلطفاً <b>توکن API</b> یا <code>email:GlobalKey</code> را بفرستید:', [
       [{ text: '🚀 ساخت توکن در کلودفلر', url: CF_TEMPLATE_URL }],
-      [BTN.cancel],
+      [BTN.menu],
     ]);
   };
 
@@ -34,7 +34,7 @@ export function dnsFlow({ bot, app, zoneCache }) {
     if (page > 0) nav.push({ text: '◀️ قبلی', data: `cf_zones:${page - 1}` });
     if (start + ZONE_PAGE < zones.zones.length) nav.push({ text: 'بعدی ▶️', data: `cf_zones:${page + 1}` });
     if (nav.length) rows.push(nav);
-    rows.push([BTN.cancel]);
+    rows.push([BTN.menu]);
     return respond(ctx, '🌐 <b>مدیریت رکوردهای DNS</b>\n\n👇 دامنه را انتخاب کنید:', rows);
   }
 
@@ -73,13 +73,17 @@ export function dnsFlow({ bot, app, zoneCache }) {
     if (nav.length) rows.push(nav);
     rows.push([{ text: '➕ افزودن رکورد', data: 'cf_add' }, { text: '🧹 پاک‌سازی رکوردهای تانل', data: 'cf_clean' }]);
     rows.push([{ text: '🚀 ادامه نصب پنل', data: 'cf_continue' }, { text: '🔙 لیست دامنه‌ها', data: 'cmd:dns' }]);
+    rows.push([BTN.menu]);
     return respond(ctx, text, rows);
   }
 
   const openDns = (ctx) => (auth(ctx.chat.id) ? renderZones(ctx) : askAuth(ctx));
   bot.command(['dns', 'cloudflare'], openDns);
   action(bot, 'cmd:dns', openDns);
-  action(bot, 'cf_dns', (ctx) => renderManager(ctx));
+  action(bot, 'cf_dns', (ctx) => {
+    store.saveSession(ctx.chat.id, { step: 'IDLE' });
+    return renderManager(ctx);
+  });
   action(bot, /^cf_zones:(\d+)$/, (ctx) => renderZones(ctx, Number(ctx.match[1])));
   action(bot, /^cf_zone:(\d+)$/, (ctx) => {
     const zone = zoneCache.get(ctx.chat.id)?.[Number(ctx.match[1])];

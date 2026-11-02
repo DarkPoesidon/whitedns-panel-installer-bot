@@ -35,6 +35,8 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get('content-length') or 0); self.rfile.read(length)
         m = self.path.rsplit('/', 1)[-1]
+        if 'BADTOKEN' in self.path:
+            self.send_response(401); self.end_headers(); self.wfile.write(b'{"ok":false}'); return
         if m == 'getUpdates': time.sleep(1); r = []
         elif m == 'getMe': r = {'id': 1, 'is_bot': True, 'first_name': 'b', 'username': 'b_bot'}
         else: r = True
@@ -93,6 +95,30 @@ echo '== re-deploy is safe'
 ADMIN_CHAT_IDS=777 bash "$OPT/deploy.sh" < /dev/null > /tmp/wdtest-deploy.log 2>&1
 check 'second deploy keeps token' grep -q "^BOT_TOKEN=$TOKEN" "$OPT/.env"
 check 'still active' active
+
+echo '== a rejected token changes nothing'
+BEFORE=$(git -C "$OPT" rev-parse HEAD)
+git -C "$WORK" -c user.email=t@t -c user.name=t commit -q --allow-empty -m would-be-new
+git -C "$WORK" push -q "$REMOTE" main
+bash "$OPT/deploy.sh" 123456:BADTOKENabcdefgh < /dev/null > /tmp/wdtest-bad.log 2>&1
+rc=$?
+check 'deploy refuses' test "$rc" != 0
+check 'says the token was rejected' grep -q 'rejected this BOT_TOKEN' /tmp/wdtest-bad.log
+check 'code not swapped' test "$(git -C "$OPT" rev-parse HEAD)" == "$BEFORE"
+check 'running bot not stopped' active
+check 'good token kept' grep -q "^BOT_TOKEN=$TOKEN" "$OPT/.env"
+
+echo '== a bot started by hand does not survive a deploy'
+( cd "$OPT" && exec -a 'node src/bot.js' sleep 300 ) &
+STRAY=$!
+( cd /tmp && exec -a 'node src/bot.js' sleep 300 ) &
+UNRELATED=$!
+sleep 1
+ADMIN_CHAT_IDS=777 bash "$OPT/deploy.sh" < /dev/null > /tmp/wdtest-deploy.log 2>&1
+check 'deploy succeeds' test "$?" == 0
+check 'stray old bot is gone' bash -c "! kill -0 $STRAY 2>/dev/null || grep -q ' Z ' /proc/$STRAY/stat"
+check 'process in another directory untouched' kill -0 "$UNRELATED"
+kill "$STRAY" "$UNRELATED" 2>/dev/null
 
 echo '== update reached by the Telegram request file'
 git -C "$WORK" -c user.email=t@t -c user.name=t commit -q --allow-empty -m v2

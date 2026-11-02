@@ -73,7 +73,7 @@ const result = await runJob({
 assert.equal(result.status, 'ok', `${result.code} ${result.detail}`);
 assert.ok(dropped, 'the connection was dropped mid job');
 assert.ok(events.some((e) => e.stage === 'verify' && e.status === 'ok'), 'events after the reconnect arrived');
-assert.ok(/^http:\/\/127\.0\.0\.1:\d+\/[A-Za-z0-9_-]{24,96}\/$/.test(result.panel_url), result.panel_url);
+assert.ok(/^http:\/\/45\.33\.32\.156:\d+\/[A-Za-z0-9_-]{24,96}\/$/.test(result.panel_url), result.panel_url);
 log(`ok   install survived a dropped connection: ${result.panel_url}`);
 
 const after = result.session;

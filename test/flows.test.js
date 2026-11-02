@@ -246,7 +246,7 @@ test('an unverified install is not presented as a clean success', async () => {
   await reachConfirm(h);
   await h.press('deploy');
   const { text } = h.last();
-  assert.match(text, /همهٔ آزمایش‌ها موفق نبودند/);
+  assert.match(text, /هنوز از اینترنت باز نمی‌شود/);
   assert.match(text, /UDP\/53/);
   assert.match(text, /ssh -N -L 2053:127\.0\.0\.1:2053 root@1\.2\.3\.4/);
 });
@@ -263,9 +263,22 @@ test('a stalled certificate order is explained and is not shown as a clean insta
   await reachConfirm(h);
   await h.press('deploy');
   const { text } = h.last();
-  assert.match(text, /همهٔ آزمایش‌ها موفق نبودند/);
+  assert.match(text, /هنوز از اینترنت باز نمی‌شود/);
   assert.match(text, /Let's Encrypt/);
   assert.match(text, /context deadline exceeded/);
+});
+
+test('without HTTPS the card gives the IP address and warns it is unencrypted', async () => {
+  const url = 'http://1.2.3.4:2053/secretpath/';
+  const h = harness({ job: { ...OK_RESULT, https: 'false', public_http: '1', panel_bind: '1.2.3.4:2053', panel_url: url, warnings: ['CERT_STALLED'] } });
+  await reachConfirm(h);
+  await h.press('deploy');
+  const { text } = h.last();
+  assert.match(text, /با IP سرور باز می‌شود/);
+  assert.ok(text.includes(url));
+  assert.match(text, /رمزنگاری ندارد/);
+  assert.doesNotMatch(text, /ssh -N/);
+  assert.equal(h.buttons().some((b) => b.url === url), false, 'Telegram can reject IP links, which would lose the whole card');
 });
 
 test('double click runs one install', async () => {

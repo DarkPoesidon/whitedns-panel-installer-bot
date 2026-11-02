@@ -125,6 +125,7 @@ const WARNINGS = {
   HTTPS_PORTS_BUSY: 'پورت ۸۰ یا ۴۴۳ در اختیار سرویس دیگری است و HTTPS فعال نشد.',
   CERT_FAILED: 'گواهی HTTPS صادر نشد. پورت‌های ۸۰ و ۴۴۳ را در فایروال پرووایدر بررسی کنید و با /repair دوباره تلاش کنید.',
   CERT_STALLED: `گواهی دوم پنل (ECDSA) از Let's Encrypt نرسید و HTTPS برگردانده شد. معمولاً علت این است که برای همین نام در هفتهٔ اخیر چند گواهی صادر شده است؛ مثلاً با چند بار نصب و حذف. چند ساعت یا چند روز بعد با /repair دوباره تلاش کنید.`,
+  PUBLIC_ACCESS_FAILED: 'باز کردن پنل روی IP سرور موفق نبود، پس پنل فقط از راه تونل SSH باز می‌شود.',
   CHECK_TOOL_MISSING: 'ابزار تست تانل پیدا نشد و تانل آزمایش نشد.',
   PROBE_FAILED: 'حساب تست ساخته نشد و تانل آزمایش نشد.',
   TUNNEL_LOCAL_FAILED: 'تست محلی تانل Soar موفق نبود. دسترسی سرور به اینترنت را بررسی کنید.',
@@ -174,8 +175,11 @@ export function renderAccess({ result, host, sshUser, sshPort }) {
   const url = result.panel_url ?? '';
   if (result.https === 'true') return `🌐 <b>آدرس ورود به پنل:</b>\n${esc(url)}`;
   const port = (result.panel_bind ?? '').split(':').pop() || '2053';
+  if (result.public_http === '1') {
+    return `🌐 <b>آدرس ورود به پنل (با IP سرور):</b>\n${esc(url)}\n\n⚠️ این اتصال HTTP است و رمزنگاری ندارد، پس رمز شما روی شبکه محافظت نمی‌شود. فعلاً از وای‌فای عمومی وارد نشوید.\nاگر باز نشد، پورت <code>${esc(port)}</code> را در فایروال پرووایدر باز کنید. با /repair دوباره برای HTTPS تلاش کنید.`;
+  }
   const portFlag = sshPort && Number(sshPort) !== 22 ? `-p ${sshPort} ` : '';
-  return `🔒 <b>HTTPS فعال نیست و پنل فقط از داخل سرور باز می‌شود.</b>\nاین دستور را روی کامپیوتر خود اجرا کنید و تا پایان کار باز نگه دارید:\n<code>ssh -N -L ${esc(port)}:127.0.0.1:${esc(port)} ${portFlag}${esc(sshUser)}@${esc(host)}</code>\n\nسپس این آدرس را در مرورگر باز کنید:\n${esc(url)}`;
+  return `🔒 <b>HTTPS فعال نشد و پنل فقط از داخل خود سرور باز می‌شود.</b>\nآدرس با IP سرور باز نمی‌شود و این عمدی است، چون بدون HTTPS رمز شما رمزنگاری نمی‌شود.\n\nفعلاً این دستور را روی کامپیوتر خود اجرا کنید و تا پایان کار باز نگه دارید:\n<code>ssh -N -L ${esc(port)}:127.0.0.1:${esc(port)} ${portFlag}${esc(sshUser)}@${esc(host)}</code>\n\nسپس این آدرس را در مرورگر باز کنید:\n${esc(url)}`;
 }
 
 // The password of a job the bot only followed left its memory, e.g. with a restart.
@@ -183,9 +187,10 @@ const LOST_PASSWORD = '🔑 رمز ادمین در این عملیات تنظی�
 
 export function renderInstallDone({ result, host, sshUser, sshPort, adminUser, adminPass, plan }) {
   const verified = !result.warnings.some((w) => /FAILED|MISSING|STALLED/.test(w));
-  let text = verified
-    ? '🎉 <b>پنل WhiteDNS نصب و آزمایش شد.</b>'
-    : '🟡 <b>پنل نصب شد، ولی همهٔ آزمایش‌ها موفق نبودند.</b>';
+  let text = '🎉 <b>پنل WhiteDNS نصب و آزمایش شد.</b>';
+  if (result.public_http === '1') text = '🟡 <b>پنل نصب شد و با IP سرور باز می‌شود، ولی HTTPS فعال نشد.</b>';
+  else if (result.https !== 'true') text = '🟡 <b>پنل نصب شد، ولی هنوز از اینترنت باز نمی‌شود.</b>';
+  else if (!verified) text = '🟡 <b>پنل نصب شد، ولی همهٔ آزمایش‌ها موفق نبودند.</b>';
   text += `\n\n${renderAccess({ result, host, sshUser, sshPort })}`;
   if (result.admin_changed === '1' && adminPass) {
     text += `\n\n👤 <b>نام کاربری:</b> <code>${esc(adminUser)}</code>\n🔑 <b>رمز عبور:</b> <code>${esc(adminPass)}</code>\n<i>رمز را ذخیره و بعد این پیام را حذف کنید. ربات آن را نگه نمی‌دارد.</i>`;

@@ -104,7 +104,12 @@ check 'password absent from result' bash -c "! grep -q '$PASS' '$DIR/result.env'
 check 'resolved stub untouched' systemctl is-active --quiet systemd-resolved
 check 'resolv.conf untouched' test -L /etc/resolv.conf
 check 'dns on specific ip, not 0.0.0.0' bash -c "! grep -q 'dns-listen 0.0.0.0' /etc/systemd/system/soar-panel.service"
-check 'panel answers on private path' curl -fsS -o /dev/null --max-time 5 "$url"
+check 'without HTTPS the url uses the public IP' grep -q "^http://$PUBLIC:[0-9]*/" <<< "$url"
+check 'result says it is plain HTTP on the IP' test "$(result public_http)" == 1
+check 'unit allows plain HTTP only in this mode' grep -q -- '--allow-insecure-http' /etc/systemd/system/soar-panel.service
+bind=$(result panel_bind)
+check 'panel listens on the server address' bash -c "ss -H -ltn | awk '{print \$4}' | grep -qx '$bind'"
+check 'panel answers from outside loopback' curl -fsS -o /dev/null --max-time 5 "http://$bind/${url#http://*/}"
 check 'panel hides root path' bash -c "! curl -fsS -o /dev/null --max-time 5 http://$(result panel_bind)/"
 db_login_hash=$(sha256sum /var/lib/soar-panel/access.json)
 
@@ -131,7 +136,7 @@ check 'old data directory restored' test -e /var/lib/soar-panel/e2e-marker
 systemctl stop soar-panel
 check 'old zone restored' test "$(/usr/local/bin/soar-panel zone --db /var/lib/soar-panel/panel.db)" == "$ZONE"
 systemctl start soar-panel
-check 'old url restored' test "$(/usr/local/bin/soar-panel access-url --db /var/lib/soar-panel/panel.db --listen 127.0.0.1:2053)" == "$url"
+check 'old url restored' test "$(/usr/local/bin/soar-panel access-url --db /var/lib/soar-panel/panel.db --listen "$PUBLIC:2053")" == "$url"
 job 'ZONE=soar.other.example' 'ON_ZONE_MISMATCH=replace'; secret; run install
 check 'replace ok' test "$(result status)" == ok
 check 'replace is fresh' test "$(result fresh)" == 1
@@ -163,6 +168,13 @@ job; run repair
 check 'partial install repaired' test "$(result status)" == ok
 check 'unit restored' test -f /etc/systemd/system/soar-panel.service
 check 'tool restored' test -x /usr/local/bin/soar-check
+
+echo '== moving back to loopback and out again'
+( source "$DIR/agent.sh"; set +eu; PANEL_BIND=$(result panel_bind); set_panel_bind 127.0.0.1:2053 )
+check 'unit is loopback' grep -q -- '--listen 127.0.0.1:2053 --trust-loopback-proxy' /etc/systemd/system/soar-panel.service
+check 'panel healthy on loopback' /usr/local/bin/soar-panel health --db /var/lib/soar-panel/panel.db --listen 127.0.0.1:2053
+job; run repair
+check 'repair opens it on the IP again' test "$(result public_http)" == 1
 
 echo '== password reset'
 job 'RESET_ADMIN=1'; secret; run repair

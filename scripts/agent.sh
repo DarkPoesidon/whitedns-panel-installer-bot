@@ -354,6 +354,8 @@ wait_health() {
   return 1
 }
 
+panel_flag() { if [[ $PANEL_BIND == 127.* ]]; then echo --trust-loopback-proxy; else echo --allow-insecure-http; fi; }
+
 write_units() {
   cat > "$SERVICE" <<UNIT
 [Unit]
@@ -366,7 +368,7 @@ Wants=soar-panel-ops.service
 Type=simple
 User=soar-panel
 Group=soar-panel
-ExecStart=$BIN run --db $DB --dns-listen $LISTEN_IP:$DNS_PORT --listen $PANEL_BIND --trust-loopback-proxy
+ExecStart=$BIN run --db $DB --dns-listen $LISTEN_IP:$DNS_PORT --listen $PANEL_BIND $(panel_flag)
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=10
@@ -638,6 +640,46 @@ stage_verify() {
   emit verify ok
 }
 
+apply_bind() {
+  systemctl stop soar-panel.service
+  PANEL_BIND=$1
+  write_units
+  systemctl daemon-reload
+  systemctl restart soar-panel-ops.service
+  systemctl start soar-panel.service
+  wait_health 20
+}
+
+# Moves the management listener; returns to the old one if the panel does not come up there.
+set_panel_bind() {
+  local previous=$PANEL_BIND dns
+  dns=$(unit_flag soar-panel.service dns-listen)
+  LISTEN_IP=${dns%:*}
+  DNS_PORT=${dns##*:}
+  apply_bind "$1" && return 0
+  apply_bind "$previous" || die PANEL_UNHEALTHY 'after returning to the previous listener'
+  return 1
+}
+
+ufw_active() { command -v ufw >/dev/null && [[ $(ufw status 2>/dev/null) == *'Status: active'* ]]; }
+
+# Without HTTPS the panel must still open for the user, so it falls back to plain HTTP on the
+# server's IP. HTTPS working again closes that door. The private path stays required either way.
+stage_access() {
+  local port=${PANEL_BIND##*:}
+  if [[ $(access_field https) == true ]]; then
+    [[ $PANEL_BIND != 127.* ]] || return 0
+    set_panel_bind "127.0.0.1:$port" || return 0
+    if ufw_active && ufw status | grep -qE "^$port/tcp .*# $UFW_COMMENT\$"; then ufw --force delete allow "$port/tcp" >/dev/null || true; fi
+    return 0
+  fi
+  [[ $PANEL_BIND == 127.* ]] || return 0
+  # Someone's own reverse proxy already publishes this listener; moving it would break that proxy.
+  if grep -rqsE "127\.0\.0\.1:$port([^0-9]|\$)" /etc/nginx /etc/apache2 /etc/caddy; then return 0; fi
+  if ufw_active; then ufw allow "$port/tcp" comment "$UFW_COMMENT" >/dev/null || true; fi
+  set_panel_bind "$LISTEN_IP:$port" || warn https PUBLIC_ACCESS_FAILED "$LISTEN_IP:$port"
+}
+
 cmd_converge() {
   stage_preflight
   stage_deps
@@ -647,6 +689,7 @@ cmd_converge() {
   WORK_DIR=''
   rm -f -- "$SECRET"
   stage_https
+  stage_access
   stage_verify
 }
 
@@ -718,7 +761,10 @@ cmd_uninstall() {
 # --- result --------------------------------------------------------------------
 panel_url() {
   [[ -x $BIN && -n $PANEL_BIND ]] || return 0
-  timeout 10 "$BIN" access-url --db "$DB" --listen "$PANEL_BIND" 2>/dev/null || true
+  local listen=$PANEL_BIND
+  # Behind NAT the listener's address differs from the one the user can reach.
+  if [[ $PANEL_BIND != 127.* && -n $PUBLIC_IP ]]; then listen=$PUBLIC_IP:${PANEL_BIND##*:}; fi
+  timeout 10 "$BIN" access-url --db "$DB" --listen "$listen" 2>/dev/null || true
 }
 
 write_result() {
@@ -738,6 +784,7 @@ write_result() {
       echo "panel_url=$(panel_url)"
       echo "https=$(access_field https)"
       echo "panel_bind=$PANEL_BIND"
+      if [[ $(access_field https) != true && $PANEL_BIND != 127.* ]]; then echo public_http=1; fi
       echo "dns_port=$DNS_PORT"
     fi
     for warning in "${WARNINGS[@]:-}"; do [[ -z $warning ]] || echo "warning=$warning"; done
